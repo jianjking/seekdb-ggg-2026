@@ -164,12 +164,28 @@ int ObExprJsonLength::eval_json_length(const ObExpr &expr, ObEvalCtx &ctx, ObDat
   return ret;
 }
 
+static int eval_json_length_batch(const ObExpr &expr, ObEvalCtx &ctx,
+                                 const ObBitVector &skip, const int64_t batch_size)
+{
+  int ret = OB_SUCCESS;
+  // Evaluate the JSON argument with the caller's real mask before the scalar
+  // JSON parser consumes each active row. This also preserves AI_EMBED batches.
+  ObEvalCtx::BatchInfoScopeGuard guard(ctx);
+  guard.set_batch_size(batch_size);
+  if (OB_FAIL(expr.args_[0]->eval_batch(ctx, skip, batch_size))) {
+  } else {
+    ret = expr_default_eval_batch_func(expr, ctx, skip, batch_size);
+  }
+  return ret;
+}
+
 int ObExprJsonLength::cg_expr(ObExprCGCtx &expr_cg_ctx, const ObRawExpr &raw_expr,
                               ObExpr &rt_expr) const
 {
   UNUSED(expr_cg_ctx);
   UNUSED(raw_expr);
   rt_expr.eval_func_ = eval_json_length;
+  rt_expr.eval_batch_func_ = eval_json_length_batch;
   return OB_SUCCESS;
 }
 
