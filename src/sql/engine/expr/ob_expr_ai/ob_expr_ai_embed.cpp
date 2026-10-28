@@ -55,8 +55,15 @@ int ObExprAIEmbed::calc_result_typeN(ObExprResType &type,
   } else {
     types_stack[MODEL_IDX].set_calc_type(ObVarcharType);
     types_stack[MODEL_IDX].set_calc_collation_type(CS_TYPE_UTF8MB4_BIN);
-    types_stack[CONTENT_IDX].set_calc_type(ObVarcharType);
-    types_stack[CONTENT_IDX].set_calc_collation_type(CS_TYPE_UTF8MB4_BIN);
+    if (ob_is_string_tc(types_stack[CONTENT_IDX].get_type())) {
+      if (types_stack[CONTENT_IDX].get_collation_type() != CS_TYPE_BINARY) {
+        types_stack[CONTENT_IDX].set_calc_type(ObVarcharType);
+        types_stack[CONTENT_IDX].set_calc_collation_type(CS_TYPE_UTF8MB4_BIN);
+      }
+    } else if (!ob_is_text_tc(types_stack[CONTENT_IDX].get_type()) &&
+               types_stack[CONTENT_IDX].get_type() != ObNullType) {
+      ret = OB_ERR_INVALID_TYPE_FOR_OP;
+    }
     if (param_num == 3) {
       if (ob_is_integer_type(types_stack[DIM_IDX].get_type())) {
         types_stack[DIM_IDX].set_calc_type(ObIntType);
@@ -77,14 +84,19 @@ int ObExprAIEmbed::calc_result_typeN(ObExprResType &type,
 int ObExprAIEmbed::eval_ai_embed(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res) 
 {
   INIT_SUCC(ret);
+  // Scalar callers do not carry a batch skip mask. Expanding this call to
+  // other rows would also evaluate inactive CASE branches or filtered rows.
   ObDatum *arg_model_id = nullptr;
   ObDatum *arg_content = nullptr;
   ObDatum *arg_dim = nullptr;
   if (expr.arg_cnt_ == 3 ? OB_FAIL(expr.eval_param_value(ctx, arg_model_id, arg_content, arg_dim))
                          : OB_FAIL(expr.eval_param_value(ctx, arg_model_id, arg_content))) {
-  } else if (arg_model_id->is_null() || arg_content->is_null()) {
+  } else if (arg_model_id->is_null()) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, model id or content is null");
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, model id is null");
+    res.set_null();
+  } else if (arg_content->is_null()) {
+    // null input propagates to a null result, e.g. table scan with null rows
     res.set_null();
   } else {
     ObEvalCtx::TempAllocGuard tmp_alloc_g(ctx);
@@ -97,8 +109,11 @@ int ObExprAIEmbed::eval_ai_embed(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &re
     query::ObIAiEndpointResolver *endpoint_resolver =
         ::oceanbase::share::server_service<::oceanbase::query::ObIAiEndpointResolver>();
     ObString model_id = arg_model_id->get_string();
-    ObString content = arg_content->get_string();
-    if (model_id.empty() || content.empty()) {
+    ObString content;
+    if (OB_FAIL(ObTextStringHelper::read_real_string_data(ctx.exec_ctx_, temp_allocator, *arg_content,
+                   expr.args_[CONTENT_IDX]->datum_meta_, expr.args_[CONTENT_IDX]->obj_meta_.has_lob_header(),
+                   content))) {
+    } else if (model_id.empty() || content.empty()) {
       ret = OB_INVALID_ARGUMENT;
       LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, model id or input is empty");
       res.set_null();
@@ -108,14 +123,20 @@ int ObExprAIEmbed::eval_ai_embed(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &re
     ObJsonObject *config = nullptr;
     if (OB_FAIL(ret)) {
     } else if (OB_NOT_NULL(arg_dim)) {
-      dim = arg_dim->get_int();
-      if (dim <= 0) {
+      if (arg_dim->is_null()) {
         ret = OB_INVALID_ARGUMENT;
-        LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, dimension parameter must be a positive integer");
+        LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, dimension parameter is null");
         res.set_null();
-      } else if (OB_FAIL(ObAIFuncJsonUtils::get_json_object(temp_allocator, config))) {
-      } else if (OB_FAIL(ObAIFuncJsonUtils::get_json_int(temp_allocator, dim, dim_json))) {
-      } else if (OB_FAIL(config->add("dimensions", dim_json))) {
+      } else {
+        dim = arg_dim->get_int();
+        if (dim <= 0) {
+          ret = OB_INVALID_ARGUMENT;
+          LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, dimension parameter must be a positive integer");
+          res.set_null();
+        } else if (OB_FAIL(ObAIFuncJsonUtils::get_json_object(temp_allocator, config))) {
+        } else if (OB_FAIL(ObAIFuncJsonUtils::get_json_int(temp_allocator, dim, dim_json))) {
+        } else if (OB_FAIL(config->add("dimensions", dim_json))) {
+        }
       }
     }
     if (OB_FAIL(ret)) {
@@ -130,6 +151,203 @@ int ObExprAIEmbed::eval_ai_embed(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &re
       if (OB_FAIL(model.call_dense_embedding(content, config, result))) {
       } else if (OB_FAIL(ObAIFuncUtils::set_string_result(expr, ctx, res, result))) {
       }
+    }
+  }
+  return ret;
+}
+
+// set one row of a batched result, the result buffer must be reserved by the
+// row index, otherwise all rows would share the buffer of the current row
+static int set_embed_batch_result(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res,
+                                  const int64_t row_idx, const ObString &res_str)
+{
+  int ret = OB_SUCCESS;
+  if (res_str.empty()) {
+    res.set_string(res_str.ptr(), 0);
+  } else {
+    ObTextStringDatumResult text_result(expr.datum_meta_.type_, &expr, &ctx, &res);
+    if (OB_FAIL(text_result.init_with_batch_idx(res_str.length(), row_idx))) {
+    } else if (OB_FAIL(text_result.append(res_str))) {
+    } else {
+      text_result.set_result();
+    }
+  }
+  return ret;
+}
+
+// send the collected rows of one model/dimension group with a single http
+// request, then fill the result datums row by row
+static int flush_embed_batch_once(const ObExpr &expr, ObEvalCtx &ctx, ObIAllocator &allocator,
+                             const ObString &model_id, const int64_t dim,
+                             ObArray<ObString> &contents, ObArray<int64_t> &row_idxs,
+                             ObDatumVector &res_datum, ObBitVector &eval_flags)
+{
+  INIT_SUCC(ret);
+  if (!contents.empty()) {
+    ObAIFuncExprInfo *info = nullptr;
+    share::ObAiModelEndpointInfo resolved_endpoint;
+    query::ObIAiEndpointResolver *endpoint_resolver =
+        ::oceanbase::share::server_service<::oceanbase::query::ObIAiEndpointResolver>();
+    ObJsonObject *config = nullptr;
+    ObArray<ObString> results;
+    if (OB_FAIL(ObAIFuncUtils::get_ai_func_info(allocator, model_id, info))) {
+    } else if (OB_ISNULL(endpoint_resolver)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(endpoint_resolver->resolve_by_model_name(
+                   model_id, allocator, resolved_endpoint))) {
+    } else if (dim > 0) {
+      ObJsonInt *dim_json = nullptr;
+      if (OB_FAIL(ObAIFuncJsonUtils::get_json_object(allocator, config))) {
+      } else if (OB_FAIL(ObAIFuncJsonUtils::get_json_int(allocator, dim, dim_json))) {
+      } else if (OB_FAIL(config->add("dimensions", dim_json))) {
+      }
+    }
+    if (OB_SUCC(ret)) {
+      ObAIFuncModel model(allocator, *info, resolved_endpoint);
+      if (OB_FAIL(model.call_dense_embedding_vector_v2(contents, config, results))) {
+      } else if (results.count() != contents.count()) {
+        ret = OB_INVALID_DATA;
+      } else {
+        for (int64_t k = 0; OB_SUCC(ret) && k < results.count(); k++) {
+          const int64_t row = row_idxs.at(k);
+          if (OB_FAIL(set_embed_batch_result(expr, ctx, *res_datum.at(row), row, results.at(k)))) {
+          } else {
+            eval_flags.set(row);
+          }
+        }
+      }
+    }
+    contents.reuse();
+    row_idxs.reuse();
+  }
+  return ret;
+}
+
+static const int64_t EMBED_BATCH_SIZE = 20;
+
+static int flush_embed_batch(const ObExpr &expr, ObEvalCtx &ctx, ObIAllocator &allocator,
+                             const ObString &model_id, const int64_t dim,
+                             ObArray<ObString> &contents, ObArray<int64_t> &row_idxs,
+                             ObDatumVector &res_datum, ObBitVector &eval_flags)
+{
+  INIT_SUCC(ret);
+  for (int64_t start = 0; OB_SUCC(ret) && start < contents.count(); start += EMBED_BATCH_SIZE) {
+    ObArray<ObString> batch_contents;
+    ObArray<int64_t> batch_row_idxs;
+    int64_t end = start + EMBED_BATCH_SIZE;
+    if (end > contents.count()) {
+      end = contents.count();
+    }
+    for (int64_t i = start; OB_SUCC(ret) && i < end; i++) {
+      if (OB_FAIL(batch_contents.push_back(contents.at(i)))) {
+      } else if (OB_FAIL(batch_row_idxs.push_back(row_idxs.at(i)))) {
+      }
+    }
+    if (OB_SUCC(ret)) {
+      ret = flush_embed_batch_once(expr, ctx, allocator, model_id, dim,
+                                   batch_contents, batch_row_idxs,
+                                   res_datum, eval_flags);
+    }
+  }
+  contents.reuse();
+  row_idxs.reuse();
+  return ret;
+}
+
+int ObExprAIEmbed::eval_ai_embed_batch(const ObExpr &expr, ObEvalCtx &ctx,
+                                       const ObBitVector &skip, const int64_t batch_size)
+{
+  int ret = OB_SUCCESS;
+  ObDatumVector res_datum = expr.locate_expr_datumvector(ctx);
+  ObBitVector &eval_flags = expr.get_evaluated_flags(ctx);
+  ObEvalCtx::TempAllocGuard tmp_alloc_g(ctx);
+  MultimodeAlloctor temp_allocator(tmp_alloc_g.get_allocator());
+  lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(N_AI_EMBED));
+  if (OB_FAIL(expr.args_[MODEL_IDX]->eval_batch(ctx, skip, batch_size))) {
+  } else if (OB_FAIL(expr.args_[CONTENT_IDX]->eval_batch(ctx, skip, batch_size))) {
+  } else if (expr.arg_cnt_ > DIM_IDX &&
+             OB_FAIL(expr.args_[DIM_IDX]->eval_batch(ctx, skip, batch_size))) {
+  } else {
+    ObDatumVector model_datums = expr.args_[MODEL_IDX]->locate_expr_datumvector(ctx);
+    ObDatumVector content_datums = expr.args_[CONTENT_IDX]->locate_expr_datumvector(ctx);
+    ObDatumVector dim_datums;
+    if (expr.arg_cnt_ > DIM_IDX) {
+      dim_datums = expr.args_[DIM_IDX]->locate_expr_datumvector(ctx);
+    }
+    ObArray<ObString> contents;
+    ObArray<int64_t> row_idxs;
+    ObString group_model;
+    int64_t group_dim = 0;
+    bool group_open = false;
+    for (int64_t i = 0; OB_SUCC(ret) && i < batch_size; i++) {
+      if (skip.at(i) || eval_flags.at(i)) {
+        continue;
+      }
+      ObDatum *model_datum = model_datums.at(i);
+      ObDatum *content_datum = content_datums.at(i);
+      ObString model_id;
+      int64_t dim = 0;
+      if (OB_ISNULL(model_datum) || OB_ISNULL(content_datum)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (model_datum->is_null()) {
+        ret = OB_INVALID_ARGUMENT;
+        LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, model id is null");
+      } else if (content_datum->is_null()) {
+        // Match scalar NULL propagation before validating optional dimensions.
+        res_datum.at(i)->set_null();
+        eval_flags.set(i);
+        continue;
+      } else {
+        model_id = model_datum->get_string();
+        if (model_id.empty()) {
+          ret = OB_INVALID_ARGUMENT;
+          LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, model id is empty");
+        } else if (expr.arg_cnt_ > DIM_IDX) {
+          ObDatum *dim_datum = dim_datums.at(i);
+          if (OB_ISNULL(dim_datum) || dim_datum->is_null()) {
+            ret = OB_INVALID_ARGUMENT;
+            LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, dimension parameter is null");
+          } else {
+            dim = dim_datum->get_int();
+            if (dim <= 0) {
+              ret = OB_INVALID_ARGUMENT;
+              LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, dimension parameter must be a positive integer");
+            }
+          }
+        }
+      }
+
+      if (OB_FAIL(ret)) {
+      } else if (!group_open || model_id != group_model || dim != group_dim) {
+        if (OB_FAIL(flush_embed_batch(expr, ctx, temp_allocator, group_model, group_dim,
+                                      contents, row_idxs, res_datum, eval_flags))) {
+        } else {
+          group_model = model_id;
+          group_dim = dim;
+          group_open = true;
+        }
+      }
+
+      if (OB_FAIL(ret)) {
+      } else if (content_datum->is_null()) {
+        res_datum.at(i)->set_null();
+        eval_flags.set(i);
+      } else {
+        ObString content;
+        if (OB_FAIL(ObTextStringHelper::read_real_string_data(ctx.exec_ctx_, temp_allocator,
+                       *content_datum, expr.args_[CONTENT_IDX]->datum_meta_,
+                       expr.args_[CONTENT_IDX]->obj_meta_.has_lob_header(), content))) {
+        } else if (content.empty()) {
+          ret = OB_INVALID_ARGUMENT;
+          LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, content is empty");
+        } else if (OB_FAIL(contents.push_back(content))) {
+        } else if (OB_FAIL(row_idxs.push_back(i))) {
+        }
+      }
+    }
+    if (OB_SUCC(ret) && group_open) {
+      ret = flush_embed_batch(expr, ctx, temp_allocator, group_model, group_dim,
+                              contents, row_idxs, res_datum, eval_flags);
     }
   }
   return ret;
@@ -170,6 +388,7 @@ int ObExprAIEmbed::cg_expr(ObExprCGCtx &expr_cg_ctx,
 
   if (OB_SUCC(ret)) {
     rt_expr.eval_func_ = ObExprAIEmbed::eval_ai_embed;
+    rt_expr.eval_batch_func_ = ObExprAIEmbed::eval_ai_embed_batch;
   }
   return ret;
 }
