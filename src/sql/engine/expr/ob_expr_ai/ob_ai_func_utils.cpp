@@ -251,9 +251,12 @@ int ObOpenAIUtils::ObOpenAIEmbed::parse_output(common::ObIAllocator &allocator,
         } else {
           ObJsonObject *embedding_obj = static_cast<ObJsonObject *>(item_node);
           ObJsonNode *index_node = embedding_obj->get_value("index");
-          // OpenAI responses identify inputs by index, never by array position.
-          // Without it, an out-of-order response cannot be mapped safely.
-          if (OB_ISNULL(index_node) || index_node->json_type() != ObJsonNodeType::J_INT) {
+          // OpenAI responses identify inputs by index. Fall back to the array
+          // position when the field is absent, otherwise an in-order response
+          // from a compatible service that omits "index" would be rejected.
+          if (OB_ISNULL(index_node)) {
+            target_idx = i;
+          } else if (index_node->json_type() != ObJsonNodeType::J_INT) {
             ret = OB_INVALID_DATA;
           } else {
             target_idx = static_cast<ObJsonInt *>(index_node)->value();
@@ -286,17 +289,40 @@ int ObOpenAIUtils::ObOpenAIEmbed::parse_output(common::ObIAllocator &allocator,
 }
 
 int ObOllamaUtils::get_header(common::ObIAllocator &allocator,
+                              common::ObString &api_key,
                               common::ObArray<ObString> &headers) 
 {
   int ret = OB_SUCCESS;
-  // Ollama does not authenticate with an API key, but its native APIs still
-  // require a JSON content type. The AI function client rejects an empty
-  // header list, so this header is mandatory rather than optional.
+  // A plain Ollama server does not authenticate, so an empty API key is legal.
+  // The native APIs still need a JSON content type and the AI function client
+  // rejects an empty header list, hence the content type header is mandatory.
+  // When a key is configured (a key protected / proxied deployment) it is
+  // forwarded as a bearer token.
   ObString content_type_str("Content-Type: application/json");
   ObString content_type_c_str;
   if (OB_FAIL(ob_write_string(allocator, content_type_str, content_type_c_str, true))) {
     LOG_WARN("failed to write ollama content type header", K(ret));
-  } else if (OB_FAIL(headers.push_back(content_type_c_str))) {
+  } else if (!api_key.empty()) {
+    const int64_t auth_header_len = 1024;
+    char *auth_header_str = static_cast<char *>(allocator.alloc(auth_header_len));
+    if (OB_ISNULL(auth_header_str)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("failed to allocate memory for ollama auth header", K(ret));
+    } else {
+      int auth_header_pos = snprintf(auth_header_str, auth_header_len,
+                                     "Authorization: Bearer %.*s",
+                                     static_cast<int>(api_key.length()), api_key.ptr());
+      if (OB_UNLIKELY(auth_header_pos < 0) || auth_header_pos >= auth_header_len) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("failed to format ollama auth header", K(ret), K(auth_header_pos));
+      } else if (OB_FAIL(headers.push_back(
+                     ObString(static_cast<ObString::obstr_size_t>(auth_header_pos),
+                              auth_header_str)))) {
+        LOG_WARN("failed to push ollama auth header", K(ret));
+      }
+    }
+  }
+  if (OB_SUCC(ret) && OB_FAIL(headers.push_back(content_type_c_str))) {
     LOG_WARN("failed to push ollama content type header", K(ret));
   }
   return ret;
@@ -306,7 +332,55 @@ int ObOllamaUtils::ObOllamaComplete::get_header(common::ObIAllocator &allocator,
                                                 common::ObString &api_key,
                                                 common::ObArray<ObString> &headers) 
 {
-  return ObOllamaUtils::get_header(allocator, headers);
+  return ObOllamaUtils::get_header(allocator, api_key, headers);
+}
+
+// Ollama's /api/generate reads generation parameters from a nested "options"
+// object and spells the token limit "num_predict"; "format" stays top level.
+// Any other top level key is silently ignored by the server, so the config has
+// to be translated instead of merged as-is.
+static int build_ollama_generate_options(common::ObIAllocator &allocator,
+                                         common::ObJsonObject *config,
+                                         common::ObJsonObject *body_obj)
+{
+  int ret = OB_SUCCESS;
+  ObJsonObject *options_obj = nullptr;
+  if (OB_ISNULL(body_obj)) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (OB_ISNULL(config) || config->element_count() <= 0) {
+    // no generation config, nothing to translate
+  } else if (OB_FAIL(ObAIFuncJsonUtils::get_json_object(allocator, options_obj))) {
+  } else {
+    const int64_t config_count = config->element_count();
+    for (int64_t i = 0; OB_SUCC(ret) && i < config_count; i++) {
+      ObString key;
+      ObJsonNode *value = config->get_value(i);
+      if (OB_ISNULL(value)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected null config value", K(ret), K(i));
+      } else if (OB_FAIL(config->get_key(i, key))) {
+        LOG_WARN("failed to get config key", K(ret), K(i));
+      } else if (0 == key.case_compare("format")) {
+        if (OB_FAIL(body_obj->add(key, value))) {
+          LOG_WARN("failed to add ollama format field", K(ret), K(key));
+        }
+      } else if (0 == key.case_compare("max_tokens")) {
+        ObString mapped_key("num_predict");
+        if (OB_FAIL(options_obj->add(mapped_key, value))) {
+          LOG_WARN("failed to add ollama num_predict option", K(ret));
+        }
+      } else if (OB_FAIL(options_obj->add(key, value))) {
+        LOG_WARN("failed to add ollama option", K(ret), K(key));
+      }
+    }
+    if (OB_SUCC(ret) && options_obj->element_count() > 0) {
+      ObString options_key("options");
+      if (OB_FAIL(body_obj->add(options_key, options_obj))) {
+        LOG_WARN("failed to add ollama options", K(ret));
+      }
+    }
+  }
+  return ret;
 }
 
 int ObOllamaUtils::ObOllamaComplete::get_body(common::ObIAllocator &allocator,
@@ -320,7 +394,8 @@ int ObOllamaUtils::ObOllamaComplete::get_body(common::ObIAllocator &allocator,
   if (model.empty() || content.empty()) { 
     ret = OB_INVALID_ARGUMENT;
   } else {
-    // {"model": "llama3.1", "prompt": "What is the capital of France?", "stream": false}
+    // {"model": "llama3.1", "prompt": "What is the capital of France?", "stream": false,
+    //  "options": {"temperature": 0.2, "num_predict": 16}}
     ObJsonObject *body_obj = nullptr;
     ObJsonString *model_str = nullptr;
     ObJsonString *content_str = nullptr;
@@ -332,7 +407,7 @@ int ObOllamaUtils::ObOllamaComplete::get_body(common::ObIAllocator &allocator,
     } else if (OB_FAIL(body_obj->add("prompt", content_str))) {
     } else if (OB_FAIL(ObAIFuncJsonUtils::get_json_boolean(allocator, false, stream_bool))) {
     } else if (OB_FAIL(body_obj->add("stream", stream_bool))) {
-    } else if (OB_FAIL(ObAIFuncJsonUtils::compact_json_object(allocator, config, body_obj))) {
+    } else if (OB_FAIL(build_ollama_generate_options(allocator, config, body_obj))) {
     } else {
       body = body_obj;
     }
@@ -372,7 +447,10 @@ int ObOllamaUtils::ObOllamaComplete::parse_output(common::ObIAllocator &allocato
     } else if (OB_FAIL(j_tree->seek(j_path, j_path.path_node_cnt(), false, false, hit))) {
     } else if (hit.size() == 0 || OB_ISNULL(hit[0])) {
       ret = OB_INVALID_DATA;
-    } else if (hit[0]->json_type() != ObJsonNodeType::J_STRING) {
+    } else if (hit[0]->json_type() != ObJsonNodeType::J_STRING ||
+               hit[0]->get_data_length() == 0) {
+      // an empty completion means the model produced nothing usable; surface it
+      // instead of returning an empty string to SQL
       ret = OB_INVALID_DATA;
     } else {
       result = hit[0];
@@ -385,7 +463,7 @@ int ObOllamaUtils::ObOllamaEmbed::get_header(common::ObIAllocator &allocator,
                                              ObString &api_key,
                                              common::ObArray<ObString> &headers) 
 {
-  return ObOllamaUtils::get_header(allocator, headers);
+  return ObOllamaUtils::get_header(allocator, api_key, headers);
 }
 
 int ObOllamaUtils::ObOllamaEmbed::get_body(common::ObIAllocator &allocator,

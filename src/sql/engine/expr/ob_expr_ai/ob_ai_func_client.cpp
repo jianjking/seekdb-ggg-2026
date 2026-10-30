@@ -206,7 +206,9 @@ int ObAIFuncClient::send_post(ObJsonObject *data, ObJsonObject *&response)
       if (is_timeout()) {
         ret = OB_TIMEOUT;
       } else if (res != CURLE_OK) {
-        // retry
+        // a transport error may leave a partial body in the buffer; drop it so a
+        // retried response is not appended to stale bytes
+        response_buf.reset();
       } else if (!is_retryable_status_code(http_code)) {
         break;
       } else {
