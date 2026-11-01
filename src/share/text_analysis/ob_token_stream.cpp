@@ -294,10 +294,27 @@ int ObBasicEnglishNormalizer::get_next(ObDatum &next_token, int64_t &token_freq)
       ret = OB_ERR_UNEXPECTED;
     } else {
       ObString norm_alnum_token(norm_token_len, norm_token_ptr);
-      ObString norm_lower_token;
-      if (OB_FAIL(ObCharset::tolower(cs_, norm_alnum_token, norm_lower_token, norm_allocator_))) {
+      bool need_lower = false;
+      bool is_ascii = true;
+      for (uint32_t i = 0; i < norm_token_len; ++i) {
+        const unsigned char ch = static_cast<unsigned char>(norm_token_ptr[i]);
+        if (ch >= 0x80) {
+          is_ascii = false;
+          break;
+        } else if (ob_isupper(cs_, ch)) {
+          need_lower = true;
+          break;
+        }
+      }
+      if (is_ascii && !need_lower) {
+        // The tokenizer points into the immutable input document; avoid a per-token copy.
+        next_token.set_string(norm_token_ptr, norm_token_len);
       } else {
-        next_token.set_string(norm_lower_token);
+        ObString norm_lower_token;
+        if (OB_FAIL(ObCharset::tolower(cs_, norm_alnum_token, norm_lower_token, norm_allocator_))) {
+        } else {
+          next_token.set_string(norm_lower_token);
+        }
       }
     }
   }
