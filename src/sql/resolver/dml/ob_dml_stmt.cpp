@@ -190,6 +190,20 @@ int TableItem::deep_copy(ObIRawExprCopier &expr_copier,
       && OB_FAIL(deep_copy_json_table_def(*other.json_table_def_, expr_copier, allocator))) {
   } else if (OB_FAIL(expr_copier.copy(other.snapshot_query_expr_, snapshot_query_expr_))) {
   } else if (OB_FAIL(expr_copier.copy(other.function_table_expr_, function_table_expr_))) {
+  } else {
+    is_file_scan_ = other.is_file_scan_;
+    file_format_ = other.file_format_;
+    file_delimiter_ = other.file_delimiter_;
+    file_quote_ = other.file_quote_;
+    file_escape_ = other.file_escape_;
+    file_has_header_ = other.file_has_header_;
+    file_sample_size_ = other.file_sample_size_;
+    file_skip_rows_ = other.file_skip_rows_;
+    file_max_object_size_ = other.file_max_object_size_;
+    OZ(ob_write_string(*allocator, other.file_path_, file_path_));
+    OZ(ob_write_string(*allocator, other.file_null_str_, file_null_str_));
+  }
+  if (OB_FAIL(ret)) {
   } else if (OB_FAIL(part_ids_.assign(other.part_ids_))) {
   } else if (OB_FAIL(part_names_.assign(other.part_names_))) {
   } else if (is_values_table() &&
@@ -1555,7 +1569,7 @@ int ObDMLStmt::formalize_stmt_expr_reference(ObRawExprFactory *expr_factory,
       if (OB_ISNULL(column_item.expr_) ||
           OB_ISNULL(table_item = get_table_item_by_id(column_item.table_id_))) {
         ret = OB_ERR_UNEXPECTED;
-      } else if (table_item->is_function_table() ||
+      } else if ((table_item->is_function_table() && !table_item->is_file_scan_) ||
                  table_item->is_json_table() ||
                  table_item->for_update_ ||
                  table_item->is_values_table()) {

@@ -156,6 +156,17 @@ struct TableItem
     table_type_ = MAX_TABLE_TYPE;
     values_table_def_ = NULL;
     sample_info_ = nullptr;
+    is_file_scan_ = false;
+    file_path_.reset();
+    file_format_ = 0;
+    file_delimiter_ = ',';
+    file_quote_ = '"';
+    file_escape_ = '"';
+    file_has_header_ = 1;
+    file_sample_size_ = -1;
+    file_skip_rows_ = 0;
+    file_max_object_size_ = 64LL * 1024 * 1024;
+    file_null_str_.reset();
   }
 
   virtual TO_STRING_KV(N_TID, table_id_,
@@ -293,6 +304,17 @@ struct TableItem
   ObRawExpr *snapshot_query_expr_;
   SnapshotQueryType snapshot_query_type_;
   ObRawExpr *function_table_expr_;
+  bool is_file_scan_;
+  common::ObString file_path_;
+  int64_t file_format_;
+  int64_t file_delimiter_;
+  int64_t file_quote_;
+  int64_t file_escape_;
+  int64_t file_has_header_;
+  int64_t file_sample_size_;
+  int64_t file_skip_rows_;
+  int64_t file_max_object_size_;
+  common::ObString file_null_str_;
   int64_t ddl_schema_version_;
   int64_t ddl_table_id_;
   // table partition

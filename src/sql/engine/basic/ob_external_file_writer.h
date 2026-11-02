@@ -23,6 +23,7 @@
 #include "sql/engine/cmd/ob_load_data_parser.h"
 #include "ob_select_into_basic.h"
 #include "sql/resolver/dml/ob_select_stmt.h"
+#include <string>
 
 namespace oceanbase
 {
@@ -55,6 +56,8 @@ public:
   ObFileAppender file_appender_;
   int64_t split_file_id_;
   ObString url_;
+  // Set only by FileSQL COPY after checking the configured secure directory.
+  std::string file_sql_secure_dir_;
 };
 
 class ObCsvFileWriter : public ObExternalFileWriter

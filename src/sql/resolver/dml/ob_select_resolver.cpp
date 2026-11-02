@@ -2996,7 +2996,17 @@ int ObSelectResolver::resolve_into_outfile_with_format(const ParseNode *node, Ob
   ParseNode* option_node = NULL;
   if (node->num_child_ != 3) {
     ret = OB_ERR_UNEXPECTED;
-  } else if (OB_FAIL(resolve_into_const_node(node->children_[0], into_item.outfile_name_))) {
+  } else if (1 == node->value_) {
+    into_item.is_file_sql_copy_ = true;
+    bool enabled = false;
+    if (OB_FAIL(session_info_->get_sys_variable(SYS_VAR_ENABLE_FILE_SQL, enabled))) {
+    } else if (!enabled) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "file sql is disabled, set enable_file_sql = on first");
+    }
+  }
+  if (OB_SUCC(ret)
+      && OB_FAIL(resolve_into_const_node(node->children_[0], into_item.outfile_name_))) {
   }
   if (OB_SUCC(ret) && NULL != (format_node = node->children_[1])) { // format
     for (int i = 0; OB_SUCC(ret) && i < format_node->num_child_; ++i) {
@@ -3023,6 +3033,11 @@ int ObSelectResolver::resolve_into_outfile_with_format(const ParseNode *node, Ob
                                      : ObCharset::get_system_collation();
       if (OB_FAIL(external_format.csv_format_.init_format(ObDataInFileStruct(), 0, file_cs_type))) {
       }
+      if (OB_SUCC(ret) && 1 == node->value_) {
+        external_format.csv_format_.field_enclosed_char_ = '"';
+        external_format.csv_format_.field_escaped_char_ = '"';
+        external_format.csv_format_.is_optional_ = true;
+      }
     }
     for (int i = 0; OB_SUCC(ret) && i < format_node->num_child_; ++i) {
       if (OB_ISNULL(option_node = format_node->children_[i])) {
@@ -3032,8 +3047,25 @@ int ObSelectResolver::resolve_into_outfile_with_format(const ParseNode *node, Ob
       } else if (OB_FAIL(ObResolverUtils::resolve_file_format(option_node, external_format, params_))) {
       }
     }
+    if (OB_SUCC(ret) && 1 == node->value_) {
+      // COPY (format csv) defaults to a comma separator like DuckDB, whereas
+      // SELECT ... INTO OUTFILE keeps OceanBase's tab default.
+      bool has_field_term = false;
+      for (int i = 0; i < format_node->num_child_; ++i) {
+        if (NULL != format_node->children_[i]
+            && T_FIELD_TERMINATED_STR == format_node->children_[i]->type_) {
+          has_field_term = true;
+        }
+      }
+      if (!has_field_term) {
+        external_format.csv_format_.field_term_str_ = ObString(1, ",");
+      }
+    }
     if (OB_SUCC(ret)
         && OB_FAIL(external_format.to_string_with_alloc(into_item.external_properties_, *allocator_, true))) {
+    } else if (OB_SUCC(ret)) {
+      // COPY ... TO (header) is lowered onto the CSV writer through this flag.
+      into_item.has_header_ = external_format.csv_format_.parse_header_;
     }
   }
   // file: single, max_file_size, buffer_size

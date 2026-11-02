@@ -30,6 +30,7 @@ public:
         table_id_(OB_INVALID_ID),
         value_expr_(NULL),
         table_name_(),
+        is_file_scan_(false),
         access_exprs_() { }
   virtual ~ObLogFunctionTable() {}
   void add_values_expr(ObRawExpr* expr) { value_expr_ = expr; }
@@ -49,12 +50,15 @@ public:
   inline common::ObString &get_table_name() { return table_name_; }
   inline const common::ObString &get_table_name() const { return table_name_; }
   inline void set_table_name(const common::ObString &table_name) { table_name_ = table_name; }
+  inline void set_file_scan(const bool is_file_scan) { is_file_scan_ = is_file_scan; }
+  inline bool is_file_scan() const { return is_file_scan_; }
   virtual int get_plan_item_info(PlanText &plan_text, 
                                 ObSqlPlanItem &plan_item) override;
 private:
   uint64_t table_id_;
   ObRawExpr* value_expr_;
   common::ObString table_name_;
+  bool is_file_scan_;
   common::ObSEArray<ObRawExpr*, 4, common::ModulePageAllocator, true> access_exprs_;
   DISALLOW_COPY_AND_ASSIGN(ObLogFunctionTable);
 };

@@ -313,7 +313,27 @@ int ObColumnNamespaceChecker::check_column_exists(const TableItem &table_item, c
         table_id, col_name, is_exist))) {
     }
   } else if (table_item.is_function_table()) {
-    if (OB_FAIL(ObResolverUtils::check_function_table_column_exist(table_item,
+    if (table_item.is_file_scan_) {
+      // File table columns come from the inferred file schema and are already
+      // materialised as column items of this table item.
+      const ObDMLStmt *dml_stmt = dml_stmt_;
+      if (OB_ISNULL(dml_stmt)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else {
+        for (int64_t i = 0; OB_SUCC(ret) && !is_exist && i < dml_stmt->get_column_size(); ++i) {
+          const ColumnItem *column_item = dml_stmt->get_column_item(i);
+          CK (OB_NOT_NULL(column_item));
+          if (OB_SUCC(ret)
+              && column_item->table_id_ == table_item.table_id_
+              && ObCharset::case_insensitive_equal(column_item->column_name_, col_name)) {
+            is_exist = true;
+          }
+        }
+        if (OB_SUCC(ret) && !is_exist) {
+          ret = OB_ERR_BAD_FIELD_ERROR;
+        }
+      }
+    } else if (OB_FAIL(ObResolverUtils::check_function_table_column_exist(table_item,
                                                                    params_,
                                                                    col_name))) {
     } else {

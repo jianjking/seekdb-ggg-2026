@@ -44,7 +44,9 @@ public:
         escaped_cht_(),
         cs_type_(CS_TYPE_INVALID),
         is_overwrite_(false),
-        external_properties_()
+        external_properties_(),
+        has_header_(false),
+        is_file_sql_copy_(false)
   {
   }
   virtual ~ObLogSelectInto() {}
@@ -104,6 +106,13 @@ public:
   {
     is_overwrite_ = is_overwrite;
   }
+  inline void set_has_header(const bool has_header)
+  {
+    has_header_ = has_header;
+  }
+  inline bool get_has_header() const { return has_header_; }
+  inline void set_is_file_sql_copy(bool value) { is_file_sql_copy_ = value; }
+  inline bool get_is_file_sql_copy() const { return is_file_sql_copy_; }
   inline void set_external_properties(const common::ObString &external_properties)
   {
     external_properties_.assign_ptr(external_properties.ptr(), external_properties.length());
@@ -188,6 +197,9 @@ private:
   common::ObCollationType cs_type_;
   bool is_overwrite_;
   common::ObString external_properties_;
+  // Emit the column names as the first CSV line (COPY ... TO (header)).
+  bool has_header_;
+  bool is_file_sql_copy_;
 };
 }
 }

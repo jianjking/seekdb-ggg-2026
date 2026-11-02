@@ -71,7 +71,10 @@ public:
       parallel_(1),
       buffer_size_(DEFAULT_BUFFER_SIZE),
       is_overwrite_(false),
-      external_properties_(alloc)
+      external_properties_(alloc),
+      header_names_(alloc),
+      has_header_(false),
+      is_file_sql_copy_(false)
   {
   }
 
@@ -91,6 +94,10 @@ public:
   int64_t buffer_size_;
   bool is_overwrite_;
   ObExternalFileFormat::StringData external_properties_;
+  // Column names written as the first CSV line when COPY ... TO (header) runs.
+  common::ObFixedArray<common::ObString, common::ObIAllocator> header_names_;
+  bool has_header_;
+  bool is_file_sql_copy_;
   static const int64_t DEFAULT_MAX_FILE_SIZE = 256LL * 1024 * 1024;
   static const int64_t DEFAULT_BUFFER_SIZE = 1LL * 1024 * 1024;
 };
@@ -102,6 +109,7 @@ public:
     : ObOperator(exec_ctx, spec, input),
       top_limit_cnt_(INT64_MAX),
       is_first_(true),
+      header_written_(false),
       field_str_(),
       line_str_(),
       cs_type_(CS_TYPE_INVALID),
@@ -136,7 +144,7 @@ public:
     ObEscapePrinter():
       enclose_(), escape_(), zero_(), field_terminator_(), line_terminator_(), convert_replacer_(),
       need_enclose_(false), do_encode_(false), do_escape_(false), print_hex_(false),
-      ignore_convert_failed_(false) {}
+      ignore_convert_failed_(false), csv_copy_(false) {}
     int operator() (const ObString &src_str, const ob_wc_t &unicode_value) {
       int ret = OB_SUCCESS;
       ObString dst_str = src_str;
@@ -152,7 +160,7 @@ public:
         }
       }
       if (OB_FAIL(ret) || !do_escape_ || print_hex_) {
-      } else if (dst_str.compare(zero_) == 0
+      } else if ((!csv_copy_ && dst_str.compare(zero_) == 0)
                  || dst_str.compare(enclose_) == 0
                  || dst_str.compare(escape_) == 0
                  || (!need_enclose_ && (dst_str.compare(field_terminator_) == 0
@@ -162,7 +170,7 @@ public:
       if (OB_FAIL(ret)) {
       } else if (print_hex_) {
         ret = hex_print(dst_str.ptr(), dst_str.length(), buf_, buf_len_, pos_);
-      } else if (do_escape_ && dst_str.compare(zero_) == 0) {
+      } else if (do_escape_ && !csv_copy_ && dst_str.compare(zero_) == 0) {
         char zero = '0';
         ret = databuff_memcpy(buf_, buf_len_, pos_, 1, &zero);
       } else {
@@ -182,6 +190,7 @@ public:
     bool do_escape_;
     bool print_hex_;
     bool ignore_convert_failed_;
+    bool csv_copy_;
     char *buf_;
     int64_t buf_len_;
     int64_t pos_;
@@ -202,6 +211,7 @@ private:
   int get_row_str(const int64_t buf_len, bool is_first_row, char *buf, int64_t &pos);
   int into_dumpfile(ObExternalFileWriter *data_writer);
   int into_outfile(ObExternalFileWriter *data_writer);
+  int write_csv_header(ObExternalFileWriter *data_writer);
   int into_outfile_batch_csv(const ObBatchRows &brs, ObExternalFileWriter *data_writer);
   int extract_fisrt_wchar_from_varhcar(const ObObj &obj, int32_t &wchar);
   int print_wchar_to_buf(char *buf,
@@ -266,6 +276,7 @@ private:
 private:
   int64_t top_limit_cnt_;
   bool is_first_;
+  bool header_written_;
   ObObj field_str_;
   ObObj line_str_;
   ObObj file_name_;

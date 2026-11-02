@@ -19,6 +19,7 @@
 #include "ob_external_file_writer.h"
 #include "ob_select_into_basic.h"
 #include "lib/alloc/alloc_struct.h"
+#include "sql/engine/basic/file_sql/ob_file_sql_common.h"
 
 namespace oceanbase
 {
@@ -30,6 +31,11 @@ int ObExternalFileWriter::open_file()
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(file_appender_.create(url_, true))) {
+  } else if (!file_sql_secure_dir_.empty()
+             && OB_FAIL(filesql::validate_file_sql_descriptor(file_appender_.get_fd(),
+                                                               file_sql_secure_dir_))) {
+    file_appender_.close();
+    ret = OB_ERR_NO_PRIV_DIRECT_PATH_ACCESS;
   } else {
     is_file_opened_ = true;
   }

@@ -17,8 +17,12 @@
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "sql/engine/basic/ob_function_table_op.h"
+#include <cstdlib>
 #include "sql/engine/ob_exec_context.h"
+#include "sql/session/ob_sql_session_info.h"
 #include "sql/engine/expr/ob_expr_lob_utils.h"
+#include "sql/engine/basic/file_sql/ob_file_sql_common.h"
+#include "sql/engine/basic/file_sql/ob_file_sql_reader.h"
 
 
 namespace oceanbase
@@ -27,14 +31,27 @@ using namespace common;
 namespace sql
 {
 
-OB_SERIALIZE_MEMBER((ObFunctionTableSpec, ObOpSpec), value_expr_, column_exprs_, has_correlated_expr_);
+// OB_DELETE(T, ...) expands to `ptr->~T()`, so T must be visible unqualified.
+using filesql::ObFileSqlReader;
+using filesql::ObFileSqlSchema;
+
+OB_SERIALIZE_MEMBER((ObFunctionTableSpec, ObOpSpec), value_expr_, column_exprs_, has_correlated_expr_,
+                    is_file_scan_, file_path_, file_format_, file_delimiter_, file_quote_,
+                    file_escape_, file_has_header_, file_sample_size_, file_skip_rows_,
+                    file_null_str_, column_indexes_, file_max_object_size_);
 
 int ObFunctionTableOp::inner_open()
 {
   int ret = OB_SUCCESS;
   node_idx_ = 0;
   already_calc_ = false;
-  if (OB_ISNULL(MY_SPEC.value_expr_)) {
+  if (MY_SPEC.is_file_scan_) {
+    if (OB_FAIL(open_file_scan())) {
+      LOG_WARN("failed to open file scan", K(ret), K(MY_SPEC.file_path_));
+    } else {
+      next_row_func_ = &ObFunctionTableOp::inner_get_next_row_file_scan;
+    }
+  } else if (OB_ISNULL(MY_SPEC.value_expr_)) {
     ret = OB_ERR_UNEXPECTED;
   } else if (ObExtendType == MY_SPEC.value_expr_->datum_meta_.type_) {
     next_row_func_ = &ObFunctionTableOp::inner_get_next_row_udf;
@@ -50,7 +67,14 @@ int ObFunctionTableOp::inner_rescan()
   if (OB_FAIL(ObOperator::inner_rescan())) {
   } else {
     node_idx_ = 0;
-    if (MY_SPEC.has_correlated_expr_) {
+    if (MY_SPEC.is_file_scan_) {
+      file_index_ = 0;
+      if (NULL != file_reader_) {
+        if (OB_FAIL(file_reader_->start_scan())) {
+          LOG_WARN("failed to rescan file", K(ret));
+        }
+      }
+    } else if (MY_SPEC.has_correlated_expr_) {
       row_count_ = 0;
       col_count_ = 0;
       value_table_ = NULL;
@@ -67,11 +91,30 @@ int ObFunctionTableOp::inner_close()
   row_count_ = 0;
   col_count_ = 0;
   value_table_ = NULL;
+  file_index_ = 0;
+  file_row_.clear();
+  glob_files_.clear();
+  if (NULL != file_reader_) {
+    filesql::destroy_file_sql_reader(file_reader_);
+    file_reader_ = NULL;
+  }
+  if (NULL != file_schema_) {
+    OB_DELETE(ObFileSqlSchema, "FileSqlSchema", file_schema_);
+    file_schema_ = NULL;
+  }
   return ret;
 }
 
 void ObFunctionTableOp::destroy()
 {
+  if (NULL != file_reader_) {
+    filesql::destroy_file_sql_reader(file_reader_);
+    file_reader_ = NULL;
+  }
+  if (NULL != file_schema_) {
+    OB_DELETE(ObFileSqlSchema, "FileSqlSchema", file_schema_);
+    file_schema_ = NULL;
+  }
   ObOperator::destroy();
 }
 
@@ -102,6 +145,202 @@ int ObFunctionTableOp::get_current_result(ObObj &result)
 int ObFunctionTableOp::inner_get_next_row()
 {
   return (this->*next_row_func_)();
+}
+
+int ObFunctionTableOp::build_file_options(filesql::ObFileSqlOptions &options) const
+{
+  int ret = OB_SUCCESS;
+  options.format_ = static_cast<filesql::ObFileFormat>(MY_SPEC.file_format_);
+  options.delimiter_ = static_cast<char>(MY_SPEC.file_delimiter_);
+  options.quote_ = static_cast<char>(MY_SPEC.file_quote_);
+  options.escape_ = static_cast<char>(MY_SPEC.file_escape_);
+  options.has_header_ = static_cast<int32_t>(MY_SPEC.file_has_header_);
+  options.sample_size_ = MY_SPEC.file_sample_size_;
+  options.skip_rows_ = MY_SPEC.file_skip_rows_;
+  options.maximum_object_size_ = MY_SPEC.file_max_object_size_;
+  if (MY_SPEC.file_null_str_.length() > 0) {
+    options.null_str_.assign(MY_SPEC.file_null_str_.ptr(),
+                             static_cast<size_t>(MY_SPEC.file_null_str_.length()));
+  }
+  return ret;
+}
+
+int ObFunctionTableOp::open_file_scan()
+{
+  int ret = OB_SUCCESS;
+  filesql::ObFileSqlOptions options;
+  if (OB_FAIL(build_file_options(options))) {
+    LOG_WARN("failed to build file options", K(ret));
+  } else if (filesql::FS_FORMAT_GLOB == options.format_) {
+    const std::string pattern(MY_SPEC.file_path_.ptr(), MY_SPEC.file_path_.length());
+    if (OB_FAIL(filesql::expand_glob_pattern(pattern, glob_files_))) {
+      LOG_WARN("failed to expand glob pattern", K(ret), "pattern", pattern.c_str());
+    }
+    const ObSQLSessionInfo *session = ctx_.get_my_session();
+    common::ObString priv;
+    std::string secure_dir;
+    bool unrestricted = false;
+    if (OB_SUCC(ret)) {
+      if (OB_ISNULL(session)) {
+        ret = OB_NOT_INIT;
+      } else if (OB_FAIL(session->get_secure_file_priv(priv))) {
+      } else if (OB_FAIL(filesql::resolve_secure_dir(
+                     std::string(OB_ISNULL(priv.ptr()) ? "" : priv.ptr(), priv.length()),
+                     secure_dir, unrestricted))) {
+      } else if (!unrestricted) {
+        for (size_t i = 0; OB_SUCC(ret) && i < glob_files_.size(); ++i) {
+          filesql::ObFileSqlInput candidate;
+          std::string real_path;
+          if (OB_FAIL(candidate.open(glob_files_[i], secure_dir, real_path))) {
+            LOG_WARN("glob entry is inaccessible or outside secure_file_priv", K(ret));
+          }
+        }
+      }
+    }
+    file_index_ = 0;
+  } else {
+    const std::string path(MY_SPEC.file_path_.ptr(), MY_SPEC.file_path_.length());
+    std::string secure_dir;
+    bool unrestricted = false;
+    const ObSQLSessionInfo *session = ctx_.get_my_session();
+    if (OB_ISNULL(session)) {
+      ret = OB_NOT_INIT;
+    } else {
+      common::ObString priv;
+      if (OB_FAIL(session->get_secure_file_priv(priv))) {
+      } else if (OB_FAIL(filesql::resolve_secure_dir(
+                   std::string(OB_ISNULL(priv.ptr()) ? "" : priv.ptr(),
+                               static_cast<size_t>(priv.length())),
+                   secure_dir, unrestricted))) {
+        LOG_USER_ERROR(OB_ERR_NO_PRIVILEGE, "secure_file_priv is not configured");
+      } else if (unrestricted) {
+        secure_dir.clear();
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_ISNULL(file_schema_ = OB_NEW(filesql::ObFileSqlSchema, "FileSqlSchema"))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+      } else if (OB_FAIL(filesql::create_file_sql_reader(options.format_, file_reader_))) {
+        LOG_WARN("failed to create file reader", K(ret));
+      } else if (OB_FAIL(file_reader_->open(path, options, secure_dir))) {
+        LOG_WARN("failed to open data file", K(ret), "path", path.c_str());
+      } else if (OB_FAIL(file_reader_->infer_schema(*file_schema_))) {
+        LOG_WARN("failed to infer file schema", K(ret), "path", path.c_str(),
+                 "detail", file_reader_->error_message().c_str(),
+                 "line", file_reader_->error_line(), "column", file_reader_->error_column());
+        ret = OB_INVALID_DATA;
+      } else {
+        std::vector<int64_t> projection;
+        for (int64_t i = 0; i < MY_SPEC.column_indexes_.count(); ++i) {
+          projection.push_back(MY_SPEC.column_indexes_.at(i));
+        }
+        if (OB_FAIL(file_reader_->set_projection(projection))) {
+        } else if (OB_FAIL(file_reader_->start_scan())) {
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+int ObFunctionTableOp::assign_expr_value(const int64_t expr_index,
+                                         const filesql::ObFileSqlValue &value)
+{
+  int ret = OB_SUCCESS;
+  if (expr_index < 0 || expr_index >= MY_SPEC.column_exprs_.count()) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    ObExpr *expr = MY_SPEC.column_exprs_.at(expr_index);
+    ObDatum &datum = expr->locate_datum_for_write(eval_ctx_);
+    if (value.null_) {
+      datum.set_null();
+    } else {
+      ObObj obj;
+      switch (value.type_) {
+        case filesql::FS_TYPE_BIGINT: {
+          obj.set_int(value.int_value_);
+          break;
+        }
+        case filesql::FS_TYPE_DOUBLE: {
+          obj.set_double(value.double_value_);
+          break;
+        }
+        case filesql::FS_TYPE_BOOLEAN: {
+          obj.set_tinyint(static_cast<int8_t>(0 != value.int_value_ ? 1 : 0));
+          break;
+        }
+        case filesql::FS_TYPE_DATE: {
+          obj.set_date(value.date_value_);
+          break;
+        }
+        case filesql::FS_TYPE_DATETIME: {
+          obj.set_datetime(value.datetime_value_);
+          break;
+        }
+        default: {
+          obj.set_varchar(value.str_ptr_, value.str_len_);
+          break;
+        }
+      }
+      if (obj.get_type() != expr->obj_meta_.get_type()) {
+        ret = OB_INVALID_DATA;
+        LOG_WARN("file column type changed between resolution and execution", K(ret),
+                 "actual_type", obj.get_type(), "planned_type", expr->obj_meta_.get_type());
+      } else {
+        ret = datum.from_obj(obj, expr->obj_datum_map_);
+      }
+    }
+    if (OB_SUCC(ret)) {
+      expr->set_evaluated_projected(eval_ctx_);
+    }
+  }
+  return ret;
+}
+
+int ObFunctionTableOp::inner_get_next_row_file_scan()
+{
+  int ret = OB_SUCCESS;
+  clear_evaluated_flag();
+  if (filesql::FS_FORMAT_GLOB == static_cast<filesql::ObFileFormat>(MY_SPEC.file_format_)) {
+    if (file_index_ >= static_cast<int64_t>(glob_files_.size())) {
+      ret = OB_ITER_END;
+    } else if (MY_SPEC.column_exprs_.empty()) {
+      ++file_index_;
+    } else {
+      const std::string &path = glob_files_[static_cast<size_t>(file_index_)];
+      ObObj obj;
+      obj.set_varchar(path.data(), static_cast<int32_t>(path.size()));
+      ObExpr *expr = MY_SPEC.column_exprs_.at(0);
+      ObDatum &datum = expr->locate_datum_for_write(eval_ctx_);
+      if (OB_FAIL(datum.from_obj(obj, expr->obj_datum_map_))) {
+      } else {
+        expr->set_evaluated_projected(eval_ctx_);
+        ++file_index_;
+      }
+    }
+  } else if (OB_ISNULL(file_reader_)) {
+    ret = OB_NOT_INIT;
+  } else if (OB_FAIL(file_reader_->next_row(file_row_))) {
+    if (OB_ITER_END != ret) {
+      LOG_WARN("failed to read row from file", K(ret), "detail",
+               file_reader_->error_message().c_str(), "line", file_reader_->error_line(),
+               "column", file_reader_->error_column());
+    }
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < MY_SPEC.column_exprs_.count(); ++i) {
+      const int64_t column_index = (i < MY_SPEC.column_indexes_.count())
+                                       ? MY_SPEC.column_indexes_.at(i)
+                                       : i;
+      if (column_index < 0 || column_index >= static_cast<int64_t>(file_row_.size())) {
+        ObExpr *expr = MY_SPEC.column_exprs_.at(i);
+        expr->locate_datum_for_write(eval_ctx_).set_null();
+        expr->set_evaluated_projected(eval_ctx_);
+      } else if (OB_FAIL(assign_expr_value(i, file_row_[static_cast<size_t>(column_index)]))) {
+        LOG_WARN("failed to convert file value", K(ret), K(i), K(column_index));
+      }
+    }
+  }
+  return ret;
 }
 
 int ObFunctionTableOp::inner_get_next_row_udf()

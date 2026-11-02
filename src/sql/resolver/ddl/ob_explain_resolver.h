@@ -33,6 +33,10 @@ namespace sql
     virtual ~ObExplainResolver() {}
     virtual int resolve(const ParseNode &parse_tree);
     ObExplainStmt *get_explain_stmt();
+    // DuckDB compatible `DESCRIBE <query>`: reports the columns that the query
+    // would produce.  Only file tables are supported, everything else is
+    // rejected with OB_NOT_SUPPORTED.
+    int resolve_describe_query(const ParseNode &parse_tree);
     int resolve_columns(ObRawExpr *&expr, common::ObArray<ObQualifiedName> &columns)
     {
       UNUSED(expr);

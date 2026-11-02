@@ -19,12 +19,20 @@
 
 #include "sql/engine/ob_operator.h"
 #include "sql/engine/basic/ob_chunk_datum_store.h"
+#include "sql/engine/basic/file_sql/ob_file_sql_common.h"
 #include "lib/charset/ob_charset.h"
+#include <string>
+#include <vector>
 
 namespace oceanbase
 {
 namespace sql
 {
+
+namespace filesql
+{
+class ObFileSqlReader;
+}
 
 class ObExpr;
 class ObFunctionTableSpec : public ObOpSpec
@@ -32,11 +40,26 @@ class ObFunctionTableSpec : public ObOpSpec
 OB_UNIS_VERSION_V(1);
 public:
   ObFunctionTableSpec(common::ObIAllocator &alloc, const ObPhyOperatorType type)
-    : ObOpSpec(alloc, type), value_expr_(nullptr), column_exprs_(alloc), has_correlated_expr_(false)
+    : ObOpSpec(alloc, type), value_expr_(nullptr), column_exprs_(alloc), has_correlated_expr_(false),
+      is_file_scan_(false), file_path_(), file_format_(0), file_delimiter_(','), file_quote_('"'),
+      file_escape_('"'), file_has_header_(-1), file_sample_size_(-1), file_skip_rows_(0),
+      file_null_str_(), column_indexes_(alloc), file_max_object_size_(64LL * 1024 * 1024)
   {}
   ObExpr *value_expr_;
   common::ObFixedArray<ObExpr*, common::ObIAllocator> column_exprs_;
   bool has_correlated_expr_;
+  bool is_file_scan_;
+  common::ObString file_path_;
+  int64_t file_format_;
+  int64_t file_delimiter_;
+  int64_t file_quote_;
+  int64_t file_escape_;
+  int64_t file_has_header_;
+  int64_t file_sample_size_;
+  int64_t file_skip_rows_;
+  common::ObString file_null_str_;
+  common::ObFixedArray<int64_t, common::ObIAllocator> column_indexes_;
+  int64_t file_max_object_size_;
 };
 
 class ObFunctionTableOp : public ObOperator
@@ -48,7 +71,13 @@ public:
     already_calc_(false),
     row_count_(0),
     col_count_(0),
-    value_table_(NULL) 
+    value_(),
+    value_table_(NULL),
+    file_reader_(NULL),
+    file_row_(),
+    file_schema_(NULL),
+    file_index_(0),
+    glob_files_()
   {}
 
   virtual int inner_open() override;
@@ -60,6 +89,10 @@ public:
 private:
   int inner_get_next_row_udf();
   int inner_get_next_row_sys_func();
+  int inner_get_next_row_file_scan();
+  int open_file_scan();
+  int build_file_options(filesql::ObFileSqlOptions &options) const;
+  int assign_expr_value(const int64_t expr_index, const filesql::ObFileSqlValue &value);
   int get_current_result(common::ObObj &result);
   int64_t node_idx_;
   bool already_calc_;
@@ -67,6 +100,11 @@ private:
   int64_t col_count_;
   common::ObObj value_;
   pl::ObPLCollection *value_table_;
+  filesql::ObFileSqlReader *file_reader_;
+  std::vector<filesql::ObFileSqlValue> file_row_;
+  filesql::ObFileSqlSchema *file_schema_;
+  int64_t file_index_;
+  std::vector<std::string> glob_files_;
   int (ObFunctionTableOp::*next_row_func_)();
 };
 

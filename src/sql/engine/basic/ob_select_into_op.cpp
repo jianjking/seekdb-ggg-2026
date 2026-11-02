@@ -27,6 +27,7 @@
 #include "common/udt/ob_collection_type.h"
 #include "share/config/ob_server_config.h"
 #include "share/ob_lob_access_utils.h"
+#include "sql/engine/basic/file_sql/ob_file_sql_common.h"
 
 namespace oceanbase
 {
@@ -34,11 +35,12 @@ using namespace common;
 namespace sql
 {
 
+
 OB_SERIALIZE_MEMBER(ObSelectIntoOpInput, task_id_, sqc_id_);
 OB_SERIALIZE_MEMBER((ObSelectIntoSpec, ObOpSpec), into_type_, user_vars_, outfile_name_,
     field_str_, line_str_, closed_cht_, is_optional_, select_exprs_, is_single_, max_file_size_,
     escaped_cht_, cs_type_, parallel_, buffer_size_, is_overwrite_,
-    external_properties_);
+    external_properties_, header_names_, has_header_, is_file_sql_copy_);
 
 
 int ObSelectIntoOp::inner_open()
@@ -200,6 +202,10 @@ int ObSelectIntoOp::inner_get_next_row()
       && T_INTO_VARIABLES != into_type
       && OB_FAIL(create_the_only_data_writer(data_writer))) {
   }
+  if (OB_SUCC(ret) && MY_SPEC.has_header_ && T_INTO_OUTFILE == into_type) {
+    if (OB_FAIL(write_csv_header(data_writer))) {
+    }
+  }
   while (OB_SUCC(ret) && row_count < top_limit_cnt_) {
     clear_evaluated_flag();
     if (OB_FAIL(child_->get_next_row())) {
@@ -253,6 +259,8 @@ int ObSelectIntoOp::inner_get_next_batch(const int64_t max_row_cnt)
     if (OB_FAIL(create_the_only_data_writer(data_writer))) {
     } else if (OB_ISNULL(data_writer)) {
       ret = OB_ERR_UNEXPECTED;
+    } else if (MY_SPEC.has_header_ && T_INTO_OUTFILE == into_type
+               && OB_FAIL(write_csv_header(data_writer))) {
     }
   }
 
@@ -929,7 +937,14 @@ int ObSelectIntoOp::print_field(const ObObj &obj, ObCsvFileWriter &data_writer)
   if (need_enclose) {
     OZ(write_single_char_to_file(&char_enclose_, data_writer));
   }
-  if (!has_escape_) {
+  if (MY_SPEC.is_file_sql_copy_ && obj.is_null()) {
+    if (external_properties_.csv_format_.null_if_.count() > 0) {
+      ObObj null_str;
+      null_str.set_varchar(external_properties_.csv_format_.null_if_.at(0));
+      null_str.set_collation_type(cs_type_);
+      OZ(write_obj_to_file(null_str, data_writer, false));
+    }
+  } else if (!has_escape_) {
     OZ(write_obj_to_file(obj, data_writer, false));
   } else if (obj.is_null()) {
     OZ(write_single_char_to_file(&char_escape_, data_writer));
@@ -939,6 +954,35 @@ int ObSelectIntoOp::print_field(const ObObj &obj, ObCsvFileWriter &data_writer)
   }
   if (need_enclose) {
     OZ(write_single_char_to_file(&char_enclose_, data_writer));
+  }
+  return ret;
+}
+
+// Writes the column names as the first CSV line.  Only COPY ... TO (header)
+// sets has_header_, so regular SELECT INTO OUTFILE output is unchanged.
+int ObSelectIntoOp::write_csv_header(ObExternalFileWriter *data_writer)
+{
+  int ret = OB_SUCCESS;
+  ObCsvFileWriter *csv_data_writer = NULL;
+  if (OB_ISNULL(csv_data_writer = static_cast<ObCsvFileWriter *>(data_writer))) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (header_written_) {
+    // do nothing
+  } else {
+    const int64_t count = MY_SPEC.header_names_.count();
+    ObObj obj;
+    for (int64_t i = 0; OB_SUCC(ret) && i < count; ++i) {
+      obj.reset();
+      obj.set_varchar(MY_SPEC.header_names_.at(i));
+      obj.set_collation_type(cs_type_);
+      OZ(print_field(obj, *csv_data_writer));
+      if (OB_SUCC(ret) && i != count - 1) {
+        OZ(write_obj_to_file(field_str_, *csv_data_writer));
+      }
+    }
+    OZ(write_obj_to_file(line_str_, *csv_data_writer));
+    OX(csv_data_writer->update_last_line_pos());
+    OX(header_written_ = true);
   }
   return ret;
 }
@@ -1131,6 +1175,7 @@ int ObSelectIntoOp::print_wchar_to_buf(char *buf,
 
 int ObSelectIntoOp::prepare_escape_printer()
 {
+  escape_printer_.csv_copy_ = MY_SPEC.is_file_sql_copy_;
   int ret = OB_SUCCESS;
   int64_t pos = 0;
   char *buf = NULL;
@@ -1201,6 +1246,27 @@ int ObSelectIntoOp::create_shared_buffer_for_data_writer()
 int ObSelectIntoOp::check_secure_file_path(ObString file_name)
 {
   int ret = OB_SUCCESS;
+  if (MY_SPEC.is_file_sql_copy_) {
+    ObString priv;
+    std::string secure_dir;
+    std::string parent;
+    bool unrestricted = false;
+    const std::string target(file_name.ptr(), file_name.length());
+    const size_t sep = target.find_last_of("/\\");
+    const std::string raw_parent = std::string::npos == sep ? "." : target.substr(0, sep + 1);
+    if (target.find('\0') != std::string::npos) {
+      ret = OB_INVALID_ARGUMENT;
+    } else if (OB_FAIL(ObSchemaUtils::get_runtime_varchar_variable(*GCTX.schema_service_,
+                         SYS_VAR_SECURE_FILE_PRIV, ctx_.get_allocator(), priv))) {
+    } else if (OB_FAIL(filesql::resolve_secure_dir(std::string(priv.ptr(), priv.length()),
+                                                   secure_dir, unrestricted))) {
+      ret = OB_ERR_NO_PRIV_DIRECT_PATH_ACCESS;
+    } else if (OB_FAIL(filesql::normalize_file_path(raw_parent, parent))) {
+    } else if (!unrestricted && !filesql::path_is_within(secure_dir, parent)) {
+      ret = OB_ERR_NO_PRIV_DIRECT_PATH_ACCESS;
+    }
+    return ret;
+  }
   ObString file_path = file_name.split_on(file_name.reverse_find('/'));
   char full_path_buf[PATH_MAX+1];
   char *actual_path = nullptr;
@@ -1268,6 +1334,16 @@ int ObSelectIntoOp::new_data_writer(ObExternalFileWriter *&data_writer)
     {
       ret = OB_NOT_SUPPORTED;
       LOG_WARN("not support select into type", K(format_type_));
+    }
+  }
+  if (OB_SUCC(ret) && MY_SPEC.is_file_sql_copy_ && NULL != data_writer) {
+    ObString priv;
+    bool unrestricted = false;
+    if (OB_FAIL(ObSchemaUtils::get_runtime_varchar_variable(*GCTX.schema_service_,
+                         SYS_VAR_SECURE_FILE_PRIV, ctx_.get_allocator(), priv))) {
+    } else if (OB_FAIL(filesql::resolve_secure_dir(std::string(priv.ptr(), priv.length()),
+                                                   data_writer->file_sql_secure_dir_, unrestricted))) {
+      ret = OB_ERR_NO_PRIV_DIRECT_PATH_ACCESS;
     }
   }
   return ret;
