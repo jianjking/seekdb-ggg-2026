@@ -120,9 +120,9 @@ public:
 
 private:
   bool is_min_max_word(const int64_t c_len) const;
-  int casedown_word(const ObFTWord &src, ObFTWord &dst);
+  int casedown_word(const ObFTWord &src, ObFTWord &dst, bool &is_owned);
   int check_stopword(const ObFTWord &word, bool &is_stopword);
-  int groupby_word(const ObFTWord &word, const int64_t word_cnt);
+  int groupby_word(const ObFTWord &word, const int64_t word_cnt, const bool is_owned);
 private:
   ObObjMeta word_meta_;
   common::ObIAllocator &allocator_;

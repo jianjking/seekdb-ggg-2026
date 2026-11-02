@@ -148,15 +148,16 @@ int ObAddWord::process_word(
   bool is_stopword = false;
   ObFTWord src_word(word_len, word, word_meta_);
   ObFTWord dst_word;
+  bool word_is_owned = false;
   if (OB_ISNULL(word) || OB_UNLIKELY(0 >= word_len || 0 >= char_cnt || 0 >= word_freq)) {
     ret = OB_INVALID_ARGUMENT;
   } else if (is_min_max_word(char_cnt)) {
     ++min_max_word_cnt_;
-  } else if (OB_FAIL(casedown_word(src_word, dst_word))) {
+  } else if (OB_FAIL(casedown_word(src_word, dst_word, word_is_owned))) {
   } else if (OB_FAIL(check_stopword(dst_word, is_stopword))) {
   } else if (OB_UNLIKELY(is_stopword)) {
     ++stopword_cnt_;
-  } else if (OB_FAIL(groupby_word(dst_word, word_freq))) {
+  } else if (OB_FAIL(groupby_word(dst_word, word_freq, word_is_owned))) {
   } else {
     non_stopword_cnt_ += word_freq;
   }
@@ -168,9 +169,10 @@ bool ObAddWord::is_min_max_word(const int64_t c_len) const
   return flag_.min_max_word() && (c_len < min_token_size_ || c_len > max_token_size_);
 }
 
-int ObAddWord::casedown_word(const ObFTWord &src, ObFTWord &dst)
+int ObAddWord::casedown_word(const ObFTWord &src, ObFTWord &dst, bool &is_owned)
 {
   int ret = OB_SUCCESS;
+  is_owned = false;
   if (OB_UNLIKELY(src.empty())) {
     ret = OB_INVALID_ARGUMENT;
   } else if (flag_.casedown()) {
@@ -201,6 +203,7 @@ int ObAddWord::casedown_word(const ObFTWord &src, ObFTWord &dst)
       } else {
         ObFTWord tmp(dst_str.length(), dst_str.ptr(), word_meta_);
         dst = tmp;
+        is_owned = true;
       }
     }
   } else {
@@ -224,20 +227,28 @@ int ObAddWord::check_stopword(const ObFTWord &ft_word, bool &is_stopword)
   return ret;
 }
 
-int ObAddWord::groupby_word(const ObFTWord &word, const int64_t word_freq)
+int ObAddWord::groupby_word(const ObFTWord &word, const int64_t word_freq, const bool is_owned)
 {
   int ret = OB_SUCCESS;
   int64_t *word_count_ptr = nullptr;
   if (OB_UNLIKELY(word.empty() || word_freq <= 0)) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (!flag_.groupby_word()) {
-    if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/))) {
-    }
-  } else if (OB_ISNULL(word_count_ptr = word_map_.get(word))) {
+  } else if (flag_.groupby_word() && OB_NOT_NULL(word_count_ptr = word_map_.get(word))) {
+    *word_count_ptr += word_freq;
+  } else if (is_owned) {
     if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/))) {
     }
   } else {
-    *word_count_ptr += word_freq;
+    const ObString word_string = word.get_word().get_string();
+    char *word_buf = static_cast<char *>(allocator_.alloc(word_string.length()));
+    if (OB_ISNULL(word_buf)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+    } else {
+      MEMCPY(word_buf, word_string.ptr(), word_string.length());
+      ObFTWord owned_word(word_string.length(), word_buf, word_meta_);
+      if (OB_FAIL(word_map_.set_refactored(owned_word, 1/*word count*/))) {
+      }
+    }
   }
   return ret;
 }
