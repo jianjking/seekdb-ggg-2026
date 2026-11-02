@@ -1357,13 +1357,14 @@ int ObDASTRTaatIter::inner_load_next_hashmap()
       } else if (need_relevance) {
         ObDatum &relevance_datum = relevance_expr->locate_expr_datum(*ir_rtdef_->eval_ctx_);
         cur_relevance = relevance_datum.get_double();
-        if (OB_FAIL(map->get_refactored(doc_id, last_relevance))) {
-          if (OB_HASH_NOT_EXIST != ret) {
-          } else if (OB_FAIL(map->set_refactored(doc_id, cur_relevance, 1/*overwrite*/))) {
+        double *last_relevance_ptr = map->get(doc_id);
+        if (OB_ISNULL(last_relevance_ptr)) {
+          if (OB_FAIL(map->set_refactored(doc_id, cur_relevance, 1/*overwrite*/))) {
           }
-        } else if (OB_FAIL(map->set_refactored(doc_id, cur_relevance + last_relevance, 1/*overwrite*/))) {
+        } else {
+          *last_relevance_ptr += cur_relevance;
         }
-      } else {
+      } else if (OB_ISNULL(map->get(doc_id))) {
         if (OB_FAIL(map->set_refactored(doc_id, 1, 0/*overwrite*/))) {
         }
       }
