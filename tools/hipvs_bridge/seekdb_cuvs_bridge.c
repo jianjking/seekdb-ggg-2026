@@ -5,11 +5,10 @@
 #include <dlpack/dlpack.h>
 #ifdef __HIP_PLATFORM_AMD__
 #include <cuvs/cuda_runtime.h>
-#include <hip/hip_fp16.h>
 #else
 #include <cuda_runtime.h>
-#include <cuda_fp16.h>
 #endif
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +29,59 @@ static int env_int(const char* name, int def)
   long x = strtol(v, &end, 10);
   if (end == v || x <= 0 || x > 1000000) return def;
   return (int)x;
+}
+
+/* Bit-level fp32 <-> IEEE-754 binary16 conversion.  Keeping the conversion in
+ * plain integer code avoids relying on host-side `__float2half` support in
+ * hipcc/cuda and lets the bridge pass raw half bits to cuVS. */
+static uint16_t f32_to_f16_bits(float value)
+{
+  uint32_t x = 0;
+  memcpy(&x, &value, sizeof(x));
+  const uint32_t sign = (x >> 16) & 0x8000u;
+  const int32_t exp = (int32_t)((x >> 23) & 0xffu) - 127 + 15;
+  uint32_t mant = x & 0x7fffffu;
+  if (exp <= 0) {
+    if (exp < -10) return (uint16_t)sign;
+    mant |= 0x800000u;
+    const uint32_t shift = (uint32_t)(14 - exp);
+    return (uint16_t)(sign | (mant >> shift));
+  }
+  if (exp >= 31) {
+    return (uint16_t)(sign | 0x7c00u | (mant != 0 ? 0x200u : 0u));
+  }
+  mant += 0x1000u; /* round to nearest */
+  if (mant & 0x800000u) {
+    mant = 0;
+    if (exp + 1 >= 31) return (uint16_t)(sign | 0x7c00u);
+    return (uint16_t)(sign | ((uint32_t)(exp + 1) << 10));
+  }
+  return (uint16_t)(sign | ((uint32_t)exp << 10) | (mant >> 13));
+}
+
+static float f16_bits_to_f32(uint16_t h)
+{
+  const uint32_t sign = ((uint32_t)h & 0x8000u) << 16;
+  uint32_t exp = ((uint32_t)h >> 10) & 0x1fu;
+  uint32_t mant = (uint32_t)h & 0x3ffu;
+  uint32_t bits = 0;
+  if (exp == 0) {
+    if (mant == 0) {
+      bits = sign;
+    } else {
+      exp = 1;
+      while ((mant & 0x400u) == 0) { mant <<= 1; --exp; }
+      mant &= 0x3ffu;
+      bits = sign | ((exp + 127 - 15) << 23) | (mant << 13);
+    }
+  } else if (exp == 31) {
+    bits = sign | 0x7f800000u | (mant << 13);
+  } else {
+    bits = sign | ((exp + 127 - 15) << 23) | (mant << 13);
+  }
+  float value = 0.0f;
+  memcpy(&value, &bits, sizeof(value));
+  return value;
 }
 
 /* Build parameters are tuned for the contest's 250K x 128/256 L2 workload.
@@ -56,16 +108,16 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   fill_build_params(h->ip);
 
   const int allow_fp16 = env_int("SEEKDB_CUVS_FP16", 1) != 0;
-  __half* half_base = NULL;
+  uint16_t* half_base = NULL;
   for (int attempt = 0; attempt < 2; ++attempt) {
     const int use_fp16 = allow_fp16 && attempt == 0;
     void* dataset_ptr = (void*)base;
     int dataset_bits = 32;
     if (use_fp16) {
       const size_t count = (size_t)n * (size_t)dim;
-      half_base = (__half*)malloc(count * sizeof(__half));
+      half_base = (uint16_t*)malloc(count * sizeof(uint16_t));
       if (half_base == NULL) break;
-      for (size_t i = 0; i < count; ++i) { half_base[i] = __float2half(base[i]); }
+      for (size_t i = 0; i < count; ++i) { half_base[i] = f32_to_f16_bits(base[i]); }
       dataset_ptr = half_base;
       dataset_bits = 16;
     }
@@ -110,16 +162,16 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
   if (!h || !query || !out_ids) return 1;
   int rc = 0;
   const size_t q_elems = (size_t)nq * (size_t)h->dim;
-  const size_t q_bytes = q_elems * (h->bits == 16 ? sizeof(__half) : sizeof(float));
+  const size_t q_bytes = q_elems * (h->bits == 16 ? sizeof(uint16_t) : sizeof(float));
   void* qd = 0; unsigned* nd = 0; float* dd = 0; cuvsCagraSearchParams_t sp = 0;
-  __half* qh = NULL;
+  uint16_t* qh = NULL;
   if (cuvsRMMAlloc(h->res, &qd, q_bytes)  != CUVS_SUCCESS) { rc=10; goto done; }
   if (cuvsRMMAlloc(h->res, (void**)&nd, sizeof(unsigned)*(size_t)nq*topk) != CUVS_SUCCESS) { rc=11; goto done; }
   if (cuvsRMMAlloc(h->res, (void**)&dd, sizeof(float)*(size_t)nq*topk)    != CUVS_SUCCESS) { rc=12; goto done; }
   if (h->bits == 16) {
-    qh = (__half*)malloc(q_bytes);
+    qh = (uint16_t*)malloc(q_bytes);
     if (qh == NULL) { rc=13; goto done; }
-    for (size_t i = 0; i < q_elems; ++i) { qh[i] = __float2half(query[i]); }
+    for (size_t i = 0; i < q_elems; ++i) { qh[i] = f32_to_f16_bits(query[i]); }
     if (cudaMemcpy(qd, qh, q_bytes, cudaMemcpyDefault) != cudaSuccess) { rc=13; goto done; }
   } else if (cudaMemcpy(qd, query, q_bytes, cudaMemcpyDefault) != cudaSuccess) { rc=13; goto done; }
   {
@@ -238,21 +290,21 @@ int seekdb_cuvs_export_dataset(void* handle, float* out, long n, long dim)
     }
   } else if (cds->dl_tensor.dtype.code == kDLFloat && cds->dl_tensor.dtype.bits == 16) {
     const size_t count = (size_t)n * (size_t)dim;
-    __half* tmp = (__half*)malloc(count * sizeof(__half));
+    uint16_t* tmp = (uint16_t*)malloc(count * sizeof(uint16_t));
     if (tmp == NULL) {
       rc = 4;
     } else {
       int copy_ok = 1;
       if (host_src) {
-        memcpy(tmp, cds->dl_tensor.data, count * sizeof(__half));
-      } else if (cudaMemcpy(tmp, cds->dl_tensor.data, count * sizeof(__half),
+        memcpy(tmp, cds->dl_tensor.data, count * sizeof(uint16_t));
+      } else if (cudaMemcpy(tmp, cds->dl_tensor.data, count * sizeof(uint16_t),
                             cudaMemcpyDeviceToHost) != cudaSuccess) {
         copy_ok = 0;
       }
       if (!copy_ok) {
         rc = 3;
       } else {
-        for (size_t i = 0; i < count; ++i) { out[i] = __half2float(tmp[i]); }
+        for (size_t i = 0; i < count; ++i) { out[i] = f16_bits_to_f32(tmp[i]); }
       }
       free(tmp);
     }
