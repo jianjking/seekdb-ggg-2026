@@ -55,6 +55,7 @@ extern "C" int   seekdb_cuvs_search(void *handle, const float *query, long nq, l
 extern "C" void  seekdb_cuvs_free(void *handle);
 extern "C" int seekdb_cuvs_serialize(void *handle, const char *filename);
 extern "C" void *seekdb_cuvs_deserialize(const char *filename, long n, long dim);
+extern "C" int seekdb_cuvs_export_dataset(void *handle, float *out, long n, long dim);
 #else
 // GPU backend not compiled in (OB_BUILD_CUVS=OFF): inert stubs so oblib links
 // without libseekdb_cuvs_bridge.so. ob_cuvs_enabled() is false, so these are
@@ -65,6 +66,7 @@ static int   seekdb_cuvs_search(void *, const float *, long, long, unsigned int 
 static void  seekdb_cuvs_free(void *) {}
 static int seekdb_cuvs_serialize(void *, const char *) { return -1; }
 static void *seekdb_cuvs_deserialize(const char *, long, long) { return nullptr; }
+static int seekdb_cuvs_export_dataset(void *, float *, long, long) { return -1; }
 #endif
 
 namespace oceanbase {
@@ -416,15 +418,17 @@ static bool ob_cuvs_serialize(void *key, std::ostream &out, int &ret) {
   ::rewind(graph.file_);
   const int64_t build_us = ObTimeUtility::current_time() - start_us;
   const int32_t dim32 = ent->dim_;
-  const int32_t reserved = 0;
+  // reserved == 1: the CAGRA snapshot already embeds the dataset, so the
+  // snapshot stream only carries ids and the graph file.  reserved == 0 is the
+  // legacy layout that also stored a second fp32 vector copy.
+  const int32_t reserved = 1;
   const int64_t n64 = static_cast<int64_t>(n);
   if (!ob_cuvs_write(out, OB_CUVS_SNAPSHOT_MAGIC, sizeof(OB_CUVS_SNAPSHOT_MAGIC)) ||
       !ob_cuvs_write(out, &graph_bytes, sizeof(graph_bytes)) ||
       !ob_cuvs_write(out, &dim32, sizeof(dim32)) ||
       !ob_cuvs_write(out, &reserved, sizeof(reserved)) ||
       !ob_cuvs_write(out, &n64, sizeof(n64)) ||
-      !ob_cuvs_write(out, ent->buf_ids_.data(), n * sizeof(int64_t)) ||
-      !ob_cuvs_write(out, ent->buf_vecs_.data(), ent->buf_vecs_.size() * sizeof(float))) {
+      !ob_cuvs_write(out, ent->buf_ids_.data(), n * sizeof(int64_t))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("[OBVSAG][cuVS] failed to write snapshot stream", K(ret), KP(key), K(n));
     return true;
@@ -455,7 +459,7 @@ static int ob_cuvs_deserialize(void *key, int expected_dim, std::istream &in) {
       !ob_cuvs_read(in, &reserved, sizeof(reserved)) || !ob_cuvs_read(in, &n64, sizeof(n64))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("[OBVSAG][cuVS] truncated snapshot header", K(ret), KP(key));
-  } else if (dim32 <= 0 || dim32 != expected_dim || reserved != 0 || n64 <= 0 ||
+  } else if (dim32 <= 0 || dim32 != expected_dim || (reserved != 0 && reserved != 1) || n64 <= 0 ||
              n64 > UINT32_MAX ||
              static_cast<uint64_t>(n64) > std::numeric_limits<size_t>::max() / sizeof(float) / dim32 ||
              graph_bytes == 0 || graph_bytes > static_cast<uint64_t>(INT64_MAX)) {
@@ -464,12 +468,16 @@ static int ob_cuvs_deserialize(void *key, int expected_dim, std::istream &in) {
              K(expected_dim), K(n64));
   } else {
     const size_t n = static_cast<size_t>(n64);
+    const bool has_inline_vectors = (reserved == 0);
     ObCuvsEntry *ent = new ObCuvsEntry();
     ent->dim_ = dim32;
     ent->buf_ids_.resize(n);
-    ent->buf_vecs_.resize(n * static_cast<size_t>(dim32));
+    if (has_inline_vectors) {
+      ent->buf_vecs_.resize(n * static_cast<size_t>(dim32));
+    }
     if (!ob_cuvs_read(in, ent->buf_ids_.data(), n * sizeof(int64_t)) ||
-        !ob_cuvs_read(in, ent->buf_vecs_.data(), ent->buf_vecs_.size() * sizeof(float))) {
+        (has_inline_vectors &&
+         !ob_cuvs_read(in, ent->buf_vecs_.data(), ent->buf_vecs_.size() * sizeof(float)))) {
       delete ent;
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("[OBVSAG][cuVS] truncated snapshot payload", K(ret), KP(key), K(n64));
@@ -491,6 +499,21 @@ static int ob_cuvs_deserialize(void *key, int expected_dim, std::istream &in) {
         ret = OB_ERR_VSAG_RETURN_ERROR;
         LOG_WARN("[OBVSAG][cuVS] failed to load CAGRA graph from snapshot", K(ret), KP(key), K(n64));
         return ret;
+      }
+      if (!has_inline_vectors) {
+        // New snapshot layout: recover the fp32 host copy from the dataset
+        // already embedded in the CAGRA snapshot, instead of reading a
+        // duplicate copy from the stream.
+        ent->buf_vecs_.resize(n * static_cast<size_t>(dim32));
+        if (seekdb_cuvs_export_dataset(job.handle_, ent->buf_vecs_.data(),
+                                       static_cast<long>(n), dim32) != 0) {
+          seekdb_cuvs_free(job.handle_);
+          delete ent;
+          ret = OB_ERR_VSAG_RETURN_ERROR;
+          LOG_WARN("[OBVSAG][cuVS] failed to export dataset from snapshot",
+                   K(ret), KP(key), K(n), K(dim32));
+          return ret;
+        }
       }
       ent->bridge_ = ob_cuvs_wrap(job.handle_);
       ent->built_n_ = n;

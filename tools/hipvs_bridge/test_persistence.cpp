@@ -30,8 +30,13 @@ int main(int argc, char **argv)
   unsigned int ids[10];
   float distances[10];
   int result = seekdb_cuvs_search(index, vectors.data(), 1, 10, ids, distances);
+  std::vector<float> exported(count * dimension);
+  int export_result = seekdb_cuvs_export_dataset(index, exported.data(), count, dimension);
   seekdb_cuvs_free(index);
-  if (result != 0 || ids[0] != 0 || std::fabs(distances[0]) > 0.0001f) return 5;
+  if (result != 0 || export_result != 0 || ids[0] != 0 || std::fabs(distances[0]) > 0.05f) return 5;
+  for (long i = 0; i < count * dimension; ++i) {
+    if (std::fabs(exported[i] - vectors[i]) > 0.01f) return 8;
+  }
   std::printf("%s: n=%ld top1=%u distance=%g\n", argv[1], count, ids[0], distances[0]);
   return 0;
 }

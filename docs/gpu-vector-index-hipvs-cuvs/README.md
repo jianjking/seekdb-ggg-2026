@@ -47,7 +47,14 @@ seekdb_cuvs_build
 seekdb_cuvs_search
 seekdb_cuvs_free
 seekdb_cuvs_cagra_knn
+seekdb_cuvs_serialize
+seekdb_cuvs_deserialize
+seekdb_cuvs_export_dataset
 ```
+
+Build-path tuning (FP16 build/search, NN-Descent iterations) and the snapshot
+layout change are documented in
+[`optimization.md`](optimization.md).
 
 Build seekdb with the resulting library:
 
