@@ -1,0 +1,88 @@
+=== FTS Large Benchmark (label=before_r1) ===
+rows=20000 batch=500 rounds=3000 query_rounds=200 samples=3
+[0/5] SQL baseline ...
+  select1: sample=1/3 rounds=3000 total_ms=303.857 avg_ms=0.1013
+  select1: sample=2/3 rounds=3000 total_ms=252.628 avg_ms=0.0842
+  select1: sample=3/3 rounds=3000 total_ms=268.006 avg_ms=0.0893
+[1/5] setup raw schema ...
+[2/5] raw bulk load 20000 docs (batch=500) ...
+  raw load done: 0.240s (83333.3 rows/s)
+  table rows: 20000
+[3/5] build fulltext indexes ...
+  build_ik_all: 7.974s
+  build_ik_content: 4.634s
+  build_beng_en: 2.752s
+[4/5] TOKENIZE hot-path ...
+  tokenize_ik: sample=1/3 rounds=3000 total_ms=444.351 avg_ms=0.1481
+  tokenize_ik: sample=2/3 rounds=3000 total_ms=458.489 avg_ms=0.1528
+  tokenize_ik: sample=3/3 rounds=3000 total_ms=454.962 avg_ms=0.1517
+  tokenize_beng: sample=1/3 rounds=3000 total_ms=316.963 avg_ms=0.1057
+  tokenize_beng: sample=2/3 rounds=3000 total_ms=321.591 avg_ms=0.1072
+  tokenize_beng: sample=3/3 rounds=3000 total_ms=322.572 avg_ms=0.1075
+[5/5] MATCH query ...
+  query_cn: warmup_hits=8001
+  query_cn: sample=1/3 rounds=200 total_ms=254.309 avg_ms=1.2715
+  query_cn: sample=2/3 rounds=200 total_ms=264.156 avg_ms=1.3208
+  query_cn: sample=3/3 rounds=200 total_ms=288.886 avg_ms=1.4444
+  query_beng: warmup_hits=11000
+  query_beng: sample=1/3 rounds=200 total_ms=392.810 avg_ms=1.9641
+  query_beng: sample=2/3 rounds=200 total_ms=388.923 avg_ms=1.9446
+  query_beng: sample=3/3 rounds=200 total_ms=374.233 avg_ms=1.8712
+  query_mixed: warmup_hits=7332
+  query_mixed: sample=1/3 rounds=200 total_ms=284.287 avg_ms=1.4214
+  query_mixed: sample=2/3 rounds=200 total_ms=279.162 avg_ms=1.3958
+  query_mixed: sample=3/3 rounds=200 total_ms=281.319 avg_ms=1.4066
+  query_limit: warmup_hits=20
+  query_limit: sample=1/3 rounds=200 total_ms=327.119 avg_ms=1.6356
+  query_limit: sample=2/3 rounds=200 total_ms=318.394 avg_ms=1.5920
+  query_limit: sample=3/3 rounds=200 total_ms=315.630 avg_ms=1.5781
+========================================
+FTS Large Benchmark Report
+========================================
+timestamp:              2026-11-05 13:52:04
+label:                  before_r1
+git_head:               f4e13c27c
+git_dirty:              1
+rows:                   20000
+batch:                  500
+rounds:                 3000
+query_rounds:           200
+samples:                3
+warmup:                 30
+skip_load:              0
+----------------------------------------
+select1_avg_ms:         0.0916
+select1_stdev_ms:       0.0072
+raw_load_sec:           0.240
+raw_load_rows_per_sec:  83333.3
+build_ik_all_sec:       7.974
+build_ik_content_sec:   4.634
+build_beng_en_sec:      2.752
+build_total_sec:        15.367
+----------------------------------------
+tokenize_ik_avg_ms:     0.1509
+tokenize_ik_median_ms:  0.1517
+tokenize_ik_stdev_ms:   0.0020
+tokenize_beng_avg_ms:   0.1068
+tokenize_beng_median_ms:0.1072
+tokenize_beng_stdev_ms: 0.0008
+----------------------------------------
+query_cn_hits:          8001
+query_cn_avg_ms:        1.3456
+query_cn_stdev_ms:      0.0727
+query_beng_hits:        11000
+query_beng_avg_ms:      1.9266
+query_beng_stdev_ms:    0.0400
+query_mixed_hits:       7332
+query_mixed_avg_ms:     1.4079
+query_mixed_stdev_ms:   0.0105
+query_limit_hits:       20
+query_limit_avg_ms:     1.6019
+query_limit_stdev_ms:   0.0245
+========================================
+Report appended to /home/xiaob/fts-validation-20261105/final-ab/before_r1/report.txt
+
+Compare before/after on these fields:
+  build_ik_all_sec, build_ik_content_sec, build_beng_en_sec, build_total_sec
+  tokenize_ik_avg_ms/stdev, tokenize_beng_avg_ms/stdev, select1_avg_ms as SQL-loop baseline
+  query_cn_avg_ms, query_beng_avg_ms, query_mixed_avg_ms, query_limit_avg_ms with *_hits

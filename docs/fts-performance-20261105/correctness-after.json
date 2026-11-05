@@ -1,0 +1,51 @@
+{
+  "bm25": [
+    [
+      1,
+      0.7315828433197692
+    ],
+    [
+      6,
+      0.620223119230756
+    ],
+    [
+      9,
+      0.6181566272741896
+    ],
+    [
+      2,
+      0.6140646813743164
+    ]
+  ],
+  "concurrent": "passed",
+  "dml": "passed",
+  "frequencies_5": {
+    "alpha": 3,
+    "beta": 2,
+    "gamma": 1
+  },
+  "frequencies_6": {
+    "echo": 4096,
+    "tailmarker": 1
+  },
+  "limits": "passed",
+  "match_alpha": "1\n2\n6\n9",
+  "match_ik": "3\t0.44354838709677424\n1\t0.3503184713375797",
+  "tokens_0": [
+    "alpha",
+    "beta",
+    "gamma"
+  ],
+  "tokens_1": [],
+  "tokens_2": [],
+  "tokens_3": [
+    "echo",
+    "tailmarker"
+  ],
+  "tokens_ik": [
+    "oceanbase",
+    "\u5168\u6587\u7d22\u5f15",
+    "\u5206\u8bcd\u5668",
+    "\u6570\u636e\u5e93"
+  ]
+}

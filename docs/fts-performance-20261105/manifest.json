@@ -1,0 +1,38 @@
+{
+  "binaries": {
+    "before": {
+      "path": "/home/xiaob/fts-validation-20261105/bin/seekdb-previous",
+      "sha256": "eaa186f75f42c8e7399b6e3f5f5ae8229654f05cc576cac482cd1401b7570983"
+    },
+    "after": {
+      "path": "/home/xiaob/fts-validation-20261105/bin/seekdb-candidate",
+      "sha256": "4028aa844eb1d9359cad8301d008296ca582f80a5c0af171b664b7ae5945cdd9"
+    }
+  },
+  "source_head": "f4e13c27c8e7c22cb3f29cc3ce2b59e758c8cd41",
+  "official_files": {
+    "fts_large_bench.sh": "596ea5d1c0038e666b78aa94bef22d2dfb87ffc9e84dbc7e2a1da1f746424462",
+    "fts_large_bench_baseline.json": "f4e97eddb2e49c982b967fc8047f7cf37177eebe53d648f6746d85aacda91f0c",
+    "fts_large_bench_gen.py": "b0c816dd8211ac0471f60b72a37a3fb5c62580357a5b6d7ac95f5a8c2e3f143d",
+    "fts_large_bench_score.py": "bea52eb1c68d05693bb3ac5b910ab0e2fa0e70e01582f40466898ee1e2e3ef55",
+    "fts_large_bench_setup.sql": "311826751df7f51ac45156fb4284aeca9bd9197370aceb88f4fb92832b458108"
+  },
+  "config": {
+    "rows": 20000,
+    "batch": 500,
+    "rounds": 3000,
+    "query_rounds": 200,
+    "samples": 3,
+    "warmup": 30,
+    "skip_load": 0
+  },
+  "affinity": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "cpu": "Architecture:                         x86_64\nCPU op-mode(s):                       32-bit, 64-bit\nAddress sizes:                        39 bits physical, 48 bits virtual\nByte Order:                           Little Endian\nCPU(s):                               32\nOn-line CPU(s) list:                  0-31\nVendor ID:                            GenuineIntel\nModel name:                           13th Gen Intel(R) Core(TM) i9-13980HX\nCPU family:                           6\nModel:                                183\nThread(s) per core:                   2\nCore(s) per socket:                   16\nSocket(s):                            1\nStepping:                             1\nBogoMIPS:                             4838.40\nFlags:                                fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology tsc_reliable nonstop_tsc cpuid pni pclmulqdq vmx ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand hypervisor lahf_lm abm 3dnowprefetch invpcid_single ssbd ibrs ibpb stibp ibrs_enhanced tpr_shadow vnmi ept vpid ept_ad fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb sha_ni xsaveopt xsavec xgetbv1 xsaves avx_vnni umip waitpkg gfni vaes vpclmulqdq rdpid movdiri movdir64b fsrm md_clear serialize flush_l1d arch_capabilities\nVirtualization:                       VT-x\nHypervisor vendor:                    Microsoft\nVirtualization type:                  full\nL1d cache:                            768 KiB (16 instances)\nL1i cache:                            512 KiB (16 instances)\nL2 cache:                             32 MiB (16 instances)\nL3 cache:                             36 MiB (1 instance)\nVulnerability Gather data sampling:   Not affected\nVulnerability Itlb multihit:          Not affected\nVulnerability L1tf:                   Not affected\nVulnerability Mds:                    Not affected\nVulnerability Meltdown:               Not affected\nVulnerability Mmio stale data:        Not affected\nVulnerability Reg file data sampling: Mitigation; Clear Register File\nVulnerability Retbleed:               Mitigation; Enhanced IBRS\nVulnerability Spec rstack overflow:   Not affected\nVulnerability Spec store bypass:      Mitigation; Speculative Store Bypass disabled via prctl and seccomp\nVulnerability Spectre v1:             Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:             Mitigation; Enhanced / Automatic IBRS; IBPB conditional; RSB filling; PBRSB-eIBRS SW sequence; BHI BHI_DIS_S\nVulnerability Srbds:                  Not affected\nVulnerability Tsx async abort:        Not affected\n",
+  "clocksource": "hyperv_clocksource_tsc_page",
+  "timesyncd_active": "inactive"
+}

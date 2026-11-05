@@ -1,0 +1,207 @@
+diff --git a/src/data_plane/api/data_plane/fts/ob_fts_struct.h b/src/data_plane/api/data_plane/fts/ob_fts_struct.h
+index b2eb96110..c403f6a93 100644
+--- a/src/data_plane/api/data_plane/fts/ob_fts_struct.h
++++ b/src/data_plane/api/data_plane/fts/ob_fts_struct.h
+@@ -51,7 +51,8 @@ private:
+   ObObjMeta meta_;
+ };
+ 
+-typedef common::hash::ObHashMap<ObFTWord, int64_t> ObFTWordMap;
++// Each word map belongs to one expression evaluation or index-row cache.
++typedef common::hash::ObHashMap<ObFTWord, int64_t, common::hash::NoPthreadDefendMode> ObFTWordMap;
+ 
+ class ObAddWordFlag final
+ {
+diff --git a/src/observer/composition/retrieval/ob_das_legacy_tr_merge_iter.cpp b/src/observer/composition/retrieval/ob_das_legacy_tr_merge_iter.cpp
+index 56516ce8f..2f3072c70 100644
+--- a/src/observer/composition/retrieval/ob_das_legacy_tr_merge_iter.cpp
++++ b/src/observer/composition/retrieval/ob_das_legacy_tr_merge_iter.cpp
+@@ -1111,7 +1111,7 @@ int ObDASLegacyTRMergeIter::build_query_tokens(const ObDASIRScanCtDef *ir_ctdef,
+     int64_t doc_length = 0;
+     storage::ObFTParseHelper tokenize_helper;
+     common::ObSEArray<ObFTWord, 16> tokens;
+-    hash::ObHashMap<ObFTWord, int64_t> token_map;
++    storage::ObFTWordMap token_map;
+     const int64_t ft_word_bkt_cnt = MAX(search_text_string.length() / 10, 2);
+     if (OB_FAIL(tokenize_helper.init(&alloc, parser_name, parser_properties))) {
+     } else if (OB_FAIL(token_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
+@@ -1122,7 +1122,7 @@ int ObDASLegacyTRMergeIter::build_query_tokens(const ObDASIRScanCtDef *ir_ctdef,
+                            doc_length,
+                            token_map))) {
+     } else {
+-      for (hash::ObHashMap<ObFTWord, int64_t>::const_iterator iter = token_map.begin();
++      for (storage::ObFTWordMap::const_iterator iter = token_map.begin();
+           OB_SUCC(ret) && iter != token_map.end();
+           ++iter) {
+         const ObFTWord &token = iter->first;
+diff --git a/src/sql/das/iter/ob_das_text_retrieval_merge_iter.cpp b/src/sql/das/iter/ob_das_text_retrieval_merge_iter.cpp
+index 30e00f21c..25043e798 100644
+--- a/src/sql/das/iter/ob_das_text_retrieval_merge_iter.cpp
++++ b/src/sql/das/iter/ob_das_text_retrieval_merge_iter.cpp
+@@ -238,7 +238,7 @@ int ObDASTextRetrievalMergeIter::build_query_tokens(const ObDASIRScanCtDef *ir_c
+     int64_t doc_length = 0;
+     storage::ObFTParseHelper tokenize_helper;
+     common::ObSEArray<ObFTWord, 16> tokens;
+-    hash::ObHashMap<ObFTWord, int64_t> token_map;
++    storage::ObFTWordMap token_map;
+     const int64_t ft_word_bkt_cnt = MAX(search_text_string.length() / 10, 2);
+     if (OB_FAIL(tokenize_helper.init(&alloc, parser_name, parser_properties))) {
+     } else if (OB_FAIL(token_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
+@@ -249,7 +249,7 @@ int ObDASTextRetrievalMergeIter::build_query_tokens(const ObDASIRScanCtDef *ir_c
+                            doc_length,
+                            token_map))) {
+     } else {
+-      for (hash::ObHashMap<ObFTWord, int64_t>::const_iterator iter = token_map.begin();
++      for (storage::ObFTWordMap::const_iterator iter = token_map.begin();
+           OB_SUCC(ret) && iter != token_map.end();
+           ++iter) {
+         const ObFTWord &token = iter->first;
+diff --git a/src/sql/das/ob_das_domain_utils.cpp b/src/sql/das/ob_das_domain_utils.cpp
+index 9d3240f5b..c4a58689c 100644
+--- a/src/sql/das/ob_das_domain_utils.cpp
++++ b/src/sql/das/ob_das_domain_utils.cpp
+@@ -48,6 +48,7 @@ ObFTIndexRowCache::ObFTIndexRowCache()
+     row_idx_(0),
+     is_fts_index_aux_(true),
+     helper_(),
++    word_map_(),
+     is_inited_(false)
+ {
+ }
+@@ -87,16 +88,25 @@ int ObFTIndexRowCache::segment(const common::ObObjMeta &ft_obj_meta,
+   int ret = OB_SUCCESS;
+   if (OB_UNLIKELY(!is_inited_)) {
+     ret = OB_NOT_INIT;
+-  } else if (FALSE_IT(reuse())) {
+-  } else if (OB_FAIL(ObDASDomainUtils::generate_fulltext_word_rows(merge_memctx_->get_arena_allocator(),
++  } else {
++    reuse();
++    const int64_t word_bkt_cnt = MIN(MAX(fulltext.length() / 10, 2), 997);
++    if (word_map_.created() && word_map_.bucket_count() < word_bkt_cnt) {
++      word_map_.destroy();
++    }
++    if (!word_map_.created()
++        && OB_FAIL(word_map_.create(word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
++    } else if (OB_FAIL(ObDASDomainUtils::generate_fulltext_word_rows(merge_memctx_->get_arena_allocator(),
+                                                                    &helper_,
+                                                                    ft_obj_meta,
+                                                                    doc_id_datum,
+                                                                    fulltext,
+                                                                    is_fts_index_aux_,
+-                                                                   rows_))) {
+-  } else {
+-    row_idx_ = 0;
++                                                                   rows_,
++                                                                   &word_map_))) {
++    } else {
++      row_idx_ = 0;
++    }
+   }
+   LOG_TRACE("word segment", K(ret), K(row_idx_), K(rows_.count()), K(doc_id_datum), K(fulltext));
+   return ret;
+@@ -122,6 +132,7 @@ void ObFTIndexRowCache::reset()
+   rows_.reset();
+   row_idx_ = 0;
+   is_fts_index_aux_ = true;
++  word_map_.destroy();
+   helper_.reset();
+   if (OB_NOT_NULL(merge_memctx_)) {
+     DESTROY_CONTEXT(merge_memctx_);
+@@ -134,6 +145,10 @@ void ObFTIndexRowCache::reuse()
+ {
+   rows_.reuse();
+   row_idx_ = 0;
++  // Clear borrowed token keys before resetting their arena.
++  if (!word_map_.empty()) {
++    word_map_.reuse();
++  }
+   if (OB_NOT_NULL(merge_memctx_)) {
+     merge_memctx_->reset_remain_one_page();
+   }
+@@ -280,21 +295,24 @@ int ObDASDomainUtils::build_ft_doc_word_infos(
+                                                              const ObDatum &doc_id_datum,
+                                                              const ObString &fulltext,
+                                                              const bool is_fts_index_aux,
+-                                                             ObDomainIndexRow &word_rows)
++                                                             ObDomainIndexRow &word_rows,
++                                                             storage::ObFTWordMap *reusable_word_map)
+ {
+   int ret = OB_SUCCESS;
+   static int64_t FT_WORD_DOC_COL_CNT = 4;
+   static constexpr int64_t FT_MAX_WORD_BUCKET = 997;
+   const int64_t ft_word_bkt_cnt = MIN(MAX(fulltext.length() / 10, 2), FT_MAX_WORD_BUCKET);
+   int64_t doc_length = 0;
+-  ObFTWordMap ft_word_map;
++  ObFTWordMap local_word_map;
++  ObFTWordMap &ft_word_map = OB_NOT_NULL(reusable_word_map) ? *reusable_word_map : local_word_map;
+   void *rows_buf = nullptr;
+   blocksstable::ObDatumRow *rows = nullptr;
+   if (OB_ISNULL(helper) || OB_UNLIKELY(!ft_obj_meta.is_valid())) {
+     ret = OB_INVALID_ARGUMENT;
+   } else if (0 == fulltext.length()) {
+     ret = OB_ITER_END;
+-  } else if (OB_FAIL(ft_word_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
++  } else if (!ft_word_map.created()
++             && OB_FAIL(ft_word_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
+   } else if (OB_FAIL(segment_and_calc_word_count(allocator,
+                                                  helper,
+                                                  ft_obj_meta,
+diff --git a/src/sql/das/ob_das_domain_utils.h b/src/sql/das/ob_das_domain_utils.h
+index 8ad0f4657..d00111610 100644
+--- a/src/sql/das/ob_das_domain_utils.h
++++ b/src/sql/das/ob_das_domain_utils.h
+@@ -58,6 +58,7 @@ private:
+   uint64_t row_idx_;
+   bool is_fts_index_aux_;
+   storage::ObFTParseHelper helper_;
++  storage::ObFTWordMap word_map_;
+   bool is_inited_;
+ 
+   DISALLOW_COPY_AND_ASSIGN(ObFTIndexRowCache);
+@@ -186,7 +187,8 @@ public:
+                                          const ObDatum &doc_id_datum,
+                                          const ObString &fulltext,
+                                          const bool is_fts_index_aux,
+-                                         ObDomainIndexRow &word_rows);
++                                         ObDomainIndexRow &word_rows,
++                                         storage::ObFTWordMap *reusable_word_map = nullptr);
+   static int generate_multivalue_index_rows(
+       ObIAllocator &allocator,
+       const ObDASDMLBaseCtDef &das_ctdef,
+diff --git a/src/sql/optimizer/ob_join_order.cpp b/src/sql/optimizer/ob_join_order.cpp
+index 4b87652a4..aa5ca101c 100644
+--- a/src/sql/optimizer/ob_join_order.cpp
++++ b/src/sql/optimizer/ob_join_order.cpp
+@@ -16711,7 +16711,7 @@ int ObJoinOrder::get_query_tokens(ObMatchFunRawExpr *match_expr,
+     const ObObjMeta &key_meta = match_expr->get_search_key()->get_result_meta();
+     storage::ObFTParseHelper tokenize_helper;
+     common::ObSEArray<ObFTWord, 16> tokens;
+-    hash::ObHashMap<ObFTWord, int64_t> token_map;
++    storage::ObFTWordMap token_map;
+     int64_t doc_length = 0;
+     const int64_t ft_word_bkt_cnt = MAX(search_text_string.length() / 10, 2);
+     if (search_text_string.length() == 0) {
+@@ -16725,7 +16725,7 @@ int ObJoinOrder::get_query_tokens(ObMatchFunRawExpr *match_expr,
+                            doc_length,
+                            token_map))) {
+     } else {
+-      for (hash::ObHashMap<ObFTWord, int64_t>::const_iterator iter = token_map.begin();
++      for (storage::ObFTWordMap::const_iterator iter = token_map.begin();
+           OB_SUCC(ret) && iter != token_map.end();
+           ++iter) {
+         const ObFTWord &token = iter->first;
+diff --git a/src/storage/fts/ob_fts_parser_helper.cpp b/src/storage/fts/ob_fts_parser_helper.cpp
+index 2c92ee45d..3ccee4c54 100644
+--- a/src/storage/fts/ob_fts_parser_helper.cpp
++++ b/src/storage/fts/ob_fts_parser_helper.cpp
+@@ -377,7 +377,9 @@ int ObFTParseHelper::segment(
+   } else if (OB_ISNULL(cs = common::ObCharset::get_charset(type))) {
+     ret = OB_ERR_UNEXPECTED;
+   } else {
+-    words.reuse();
++    if (!words.empty()) {
++      words.reuse();
++    }
+     ObAddWord add_word(parser_property_, meta, add_word_flag_, *allocator_, words);
+     if (OB_FAIL(segment(
+                     parser_property_,

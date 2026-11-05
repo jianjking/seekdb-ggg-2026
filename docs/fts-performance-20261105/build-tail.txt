@@ -1,0 +1,20 @@
+[326 / 340] Compiling src/sql/sql_runtime_ob_sql_resolver_cmd_0.unity.cpp; 15s local ... (4 actions running)
+[328 / 340] Compiling src/sql/sql_runtime_ob_sql_plan_cache_0.unity.cpp; 8s local ... (4 actions running)
+[329 / 340] Compiling src/sql/sql_runtime_ob_sql_plan_cache_0.unity.cpp; 17s local ... (4 actions, 3 running)
+[329 / 340] Compiling src/sql/sql_runtime_ob_sql_plan_cache_0.unity.cpp; 19s local ... (4 actions running)
+[331 / 340] Compiling src/sql/sql_runtime_ob_sql_printer_0.unity.cpp; 15s local ... (4 actions, 3 running)
+[331 / 340] Compiling src/sql/sql_runtime_ob_sql_printer_0.unity.cpp; 17s local ... (4 actions running)
+[333 / 340] Compiling src/sql/sql_runtime_ob_sql_resolver_0.unity.cpp; 17s local ... (3 actions running)
+[335 / 340] Compiling src/sql/optimizer/optimizer_ob_sql_optimizer_0.unity.cpp; 9s local ... (2 actions running)
+[335 / 340] Compiling src/sql/optimizer/optimizer_ob_sql_optimizer_0.unity.cpp; 19s local ... (2 actions running)
+[336 / 340] Compiling src/sql/optimizer/optimizer_ob_sql_optimizer_0.unity.cpp; 24s local ... (2 actions, 1 running)
+[337 / 340] Compiling src/sql/optimizer/optimizer_ob_sql_optimizer_0.unity.cpp; 25s local
+[337 / 340] Compiling src/sql/optimizer/optimizer_ob_sql_optimizer_0.unity.cpp; 35s local
+[338 / 340] [Prepa] Linking src/sql/optimizer/lib_optimizer_ob_sql_optimizer_0_objects.a
+[339 / 340] Linking seekdb executable src/observer/seekdb; 1s local
+INFO: Found 1 target...
+Target //src/observer:seekdb up-to-date:
+  bazel-bin/src/observer/seekdb
+INFO: Elapsed time: 424.836s, Critical Path: 72.51s
+INFO: 100 processes: 238 action cache hit, 1 internal, 99 local.
+INFO: Build completed successfully, 100 total actions
