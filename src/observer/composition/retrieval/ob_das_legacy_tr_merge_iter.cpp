@@ -473,6 +473,7 @@ int ObDASLegacyTRMergeIter::init_daat_iter_param(ObTextDaaTParam &iter_param)
   iter_param.allocator_ = &myself_allocator_;
   iter_param.mode_flag_ = ir_ctdef_->mode_flag_;
   iter_param.function_lookup_mode_ = function_lookup_mode_;
+  iter_param.cardinality_only_ = ir_ctdef_->cardinality_only_;
   iter_param.bm25_param_est_ctx_.total_doc_cnt_expr_
       = ir_ctdef_->get_doc_agg_ctdef()->pd_expr_spec_.pd_storage_aggregate_output_.at(0);
   iter_param.bm25_param_est_ctx_.estimated_total_doc_cnt_ = ir_ctdef_->estimated_total_doc_cnt_;

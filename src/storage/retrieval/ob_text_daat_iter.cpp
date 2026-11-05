@@ -39,6 +39,9 @@ int ObTextDaaTIter::init(const ObTextDaaTParam &param)
         && relevance_collector_->supports_batched_union()
         && iter_param_->need_project_relevance() && dim_iters_->count() >= 2
         && dim_iters_->count() <= MAX_BATCH_MERGE_DIMS;
+    cardinality_only_ = param.cardinality_only_ && batch_merge_enabled_
+        && iter_param_->relevance_expr_ == nullptr && !iter_param_->need_filter()
+        && !iter_param_->limit_param_->is_valid();
     if (batch_merge_enabled_) {
       const int64_t capacity = dim_iters_->count() * iter_param_->eval_ctx_->max_batch_size_;
       if (OB_FAIL(batch_id_cmp_.init(iter_param_->id_proj_expr_->obj_meta_))) {
@@ -60,6 +63,7 @@ void ObTextDaaTIter::reset()
   batch_rows_[1].reset();
   batch_id_cmp_.reset();
   batch_merge_enabled_ = false;
+  cardinality_only_ = false;
   batch_ended_mask_ = 0;
   batch_row_count_ = 0;
   batch_row_pos_ = 0;
@@ -150,6 +154,7 @@ int ObTextDaaTIter::fill_merge_window()
       }
       BatchMergeRow *input = &batch_rows_[batch_buffer_idx_][0];
       BatchMergeRow *output = &batch_rows_[1 - batch_buffer_idx_][0];
+      const bool count_last_union = cardinality_only_ && dim + 1 == dim_iters_->count();
       int64_t i = 0;
       int64_t j = 0;
       int64_t size = 0;
@@ -163,17 +168,27 @@ int ObTextDaaTIter::fill_merge_window()
         }
         if (OB_SUCC(ret)) {
           if (cmp < 0) {
-            output[size++] = input[i++];
+            if (!count_last_union) {
+              output[size] = input[i];
+            }
+            ++size;
+            ++i;
           } else {
-            double relevance = scores[dim][j];
-            if (iter_param_->dim_weights_ != nullptr) {
+            double relevance = 0.0;
+            if (!cardinality_only_) {
+              relevance = scores[dim][j];
+            }
+            if (!cardinality_only_ && iter_param_->dim_weights_ != nullptr) {
               relevance = relevance * iter_param_->field_boost_ * iter_param_->dim_weights_->at(dim);
             }
-            output[size].id_ = ids[dim] + j;
             if (cmp == 0) {
               relevance = input[i++].relevance_ + relevance;
             }
-            output[size++].relevance_ = relevance;
+            if (!count_last_union) {
+              output[size].id_ = ids[dim] + j;
+              output[size].relevance_ = relevance;
+            }
+            ++size;
             ++j;
           }
         }
@@ -206,6 +221,14 @@ int ObTextDaaTIter::get_next_rows(const int64_t capacity, int64_t &count)
     const int64_t real_capacity = MIN(capacity, iter_param_->max_batch_size_);
     while (OB_SUCC(ret) && count < real_capacity) {
       if (batch_row_pos_ == batch_row_count_ && OB_FAIL(fill_merge_window())) {
+      } else if (cardinality_only_) {
+        // The compiler proved that the scalar COUNT observes cardinality only.
+        // All IDs in this window were deduplicated against every live posting.
+        const int64_t size = MIN(real_capacity - count, batch_row_count_ - batch_row_pos_);
+        batch_row_pos_ += size;
+        count += size;
+        input_row_cnt_ += size;
+        output_row_cnt_ += size;
       } else {
         const BatchMergeRow &row = batch_rows_[batch_buffer_idx_][batch_row_pos_++];
         bool need_project = true;
@@ -214,7 +237,7 @@ int ObTextDaaTIter::get_next_rows(const int64_t capacity, int64_t &count)
         }
       }
     }
-    if ((OB_SUCC(ret) || ret == OB_ITER_END) && count > 0
+    if (!cardinality_only_ && (OB_SUCC(ret) || ret == OB_ITER_END) && count > 0
         && OB_FAIL(project_results(count))) {
     }
   }

@@ -375,6 +375,29 @@ def main():
                 "DEALLOCATE PREPARE window_stmt")
             assert prepared.splitlines() == ["2500", "0", "5000"], prepared
             results["posting_window_boundaries"] = "passed"
+            count_queries = [
+                ("commonmarker evenmarker", 5000),
+                ("evenmarker absentmarker", 2500),
+                ("absentmarker evenmarker", 2500),
+                ("absentmarker secondabsent", 0),
+                ("commonmarker cafe caf\u00e9 evenmarker absentmarker", 5000),
+                (" ".join(rare_terms), 5),
+                ("evenmarker " + " ".join(rare_terms), 2501),
+            ]
+            for terms, expected_count in count_queries:
+                actual = int(sql(
+                    "SELECT COUNT(*) FROM many_unique WHERE MATCH(content) "
+                    "AGAINST('%s')" % terms))
+                assert actual == expected_count, (terms, actual, expected_count)
+            assert sql(
+                "SELECT COUNT(id),COUNT(DISTINCT id) FROM many_unique WHERE "
+                "MATCH(content) AGAINST('commonmarker evenmarker')"
+            ) == "5000\t5000"
+            assert sql(
+                "SELECT COUNT(*) FROM many_unique WHERE id<=257 AND "
+                "MATCH(content) AGAINST('commonmarker evenmarker')"
+            ) == "257"
+            results["cardinality_only_batch_stream"] = "passed"
     # A secondary key requires every row tied at the relevance cutoff.
     # Negative primary keys also prevent physical DocID order from masking it.
     sql("CREATE TABLE tied_docs(id BIGINT PRIMARY KEY, content TEXT)")

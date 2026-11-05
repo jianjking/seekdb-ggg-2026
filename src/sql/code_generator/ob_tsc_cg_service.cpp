@@ -1921,6 +1921,8 @@ int ObTscCgService::generate_text_ir_ctdef(const ObLogTableScan &op,
         // projected slot and statistics definitions used by the existing DAAT.
         ir_scan_ctdef->relevance_expr_ = nullptr;
         ir_scan_ctdef->match_filter_ = nullptr;
+        ir_scan_ctdef->cardinality_only_ =
+            op.get_output_exprs().empty() && !op.get_index_back();
       }
       const ObCostTableScanInfo *est_cost_info = op.get_est_cost_info();
       int partition_row_cnt = 0;

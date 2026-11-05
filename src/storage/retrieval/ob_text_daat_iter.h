@@ -37,7 +37,7 @@ struct ObTextDaaTParam
   ObTextDaaTParam()
     : dim_iters_(nullptr), base_param_(nullptr), allocator_(nullptr), relevance_collector_(nullptr),
       bm25_param_est_ctx_(), mode_flag_(sql::ObMatchAgainstMode::NATURAL_LANGUAGE_MODE),
-      function_lookup_mode_(false) {}
+      function_lookup_mode_(false), cardinality_only_(false) {}
   ~ObTextDaaTParam() {}
   TO_STRING_KV(K_(base_param), KP_(dim_iters), K_(bm25_param_est_ctx),  K_(mode_flag), K_(function_lookup_mode));
   ObIArray<ObISRDaaTDimIter *> *dim_iters_;
@@ -47,6 +47,7 @@ struct ObTextDaaTParam
   ObBM25ParamEstCtx bm25_param_est_ctx_;
   sql::ObMatchAgainstMode mode_flag_;
   bool function_lookup_mode_;
+  bool cardinality_only_;
 };
 
 class ObTextDaaTIter final : public ObSRDaaTIterImpl
@@ -57,6 +58,7 @@ public:
       mode_flag_(sql::ObMatchAgainstMode::NATURAL_LANGUAGE_MODE),
       function_lookup_mode_(false),
       batch_merge_enabled_(false),
+      cardinality_only_(false),
       batch_ended_mask_(0),
       batch_row_count_(0),
       batch_row_pos_(0),
@@ -83,6 +85,7 @@ protected:
   sql::ObMatchAgainstMode mode_flag_;
   bool function_lookup_mode_;
   bool batch_merge_enabled_;
+  bool cardinality_only_;
   uint64_t batch_ended_mask_;
   int64_t batch_row_count_;
   int64_t batch_row_pos_;
