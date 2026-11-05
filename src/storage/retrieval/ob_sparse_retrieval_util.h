@@ -25,6 +25,21 @@ namespace oceanbase
 namespace storage
 {
 
+inline int compare_binary_doc_id(const ObDatum &lhs, const ObDatum &rhs,
+                                int &cmp_ret, const ObDatumAccessContext *access_ctx)
+{
+  int ret = OB_SUCCESS;
+  if (!lhs.is_null() && !rhs.is_null() && !lhs.is_ext() && !rhs.is_ext()
+      && lhs.len_ == 16 && rhs.len_ == 16) {
+    // Binary collation compares bytes, including trailing spaces and zeroes.
+    cmp_ret = MEMCMP(lhs.ptr_, rhs.ptr_, 16);
+  } else {
+    ret = ObDatumFuncs::get_basic_func(ObVarcharType, CS_TYPE_BINARY)
+        ->null_first_cmp_(lhs, rhs, cmp_ret, access_ctx);
+  }
+  return ret;
+}
+
 class ObDomainIdCmp
 {
 public:
@@ -52,6 +67,9 @@ int ObDomainIdCmp::init(const ObObjMeta &obj_meta)
       STORAGE_LOG(WARN,"failed to get basic functions", K(ret), K(obj_meta));
     } else {
       cmp_func_ = id_basic_funcs->null_first_cmp_;
+      if (obj_meta.get_type() == ObVarcharType && obj_meta.get_collation_type() == CS_TYPE_BINARY) {
+        cmp_func_ = compare_binary_doc_id;
+      }
     }
   }
   return ret;

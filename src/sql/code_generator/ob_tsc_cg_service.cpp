@@ -1896,6 +1896,32 @@ int ObTscCgService::generate_text_ir_ctdef(const ObLogTableScan &op,
     root_ctdef = ir_scan_ctdef;
     if (OB_FAIL(generate_text_ir_spec_exprs(tr_info, *ir_scan_ctdef))) {
     } else {
+      const ObDMLStmt *stmt = op.get_plan()->get_stmt();
+      const ObSelectStmt *select_stmt =
+          stmt->is_select_stmt() ? static_cast<const ObSelectStmt *>(stmt) : nullptr;
+      if (select_stmt != nullptr && stmt->is_single_table_stmt()
+          && select_stmt->get_select_item_size() == 1
+          && select_stmt->get_select_item(0).expr_->get_expr_type() == T_FUN_COUNT
+          && static_cast<const ObAggFunRawExpr *>(select_stmt->get_select_item(0).expr_)
+              ->get_real_param_count() == 0
+          && stmt->get_condition_exprs().count() == 1
+          && stmt->get_condition_exprs().at(0) == tr_info.pushdown_match_filter_
+          && tr_info.pushdown_match_filter_->get_expr_type() == T_OP_BOOL
+          && tr_info.pushdown_match_filter_->get_param_count() == 1
+          && tr_info.pushdown_match_filter_->get_param_expr(0) == match_against
+          && match_against->get_mode_flag() == NATURAL_LANGUAGE_MODE
+          && match_against->get_columns_boosts().empty()
+          && match_against->get_param_text_expr() == nullptr
+          && select_stmt->is_scala_group_by() && !select_stmt->has_having()
+          && !select_stmt->has_order_by() && !stmt->has_limit()
+          && stmt->get_subquery_expr_size() == 0 && !tr_info.need_sort()
+          && !cg_ctx.is_func_lookup_ && !cg_ctx.is_vec_iter_func_lookup_
+          && !cg_ctx.is_es_match_ && !cg_ctx.is_merge_fts_index_) {
+        // A positive witness suffices for this sole Boolean consumer. Keep the
+        // projected slot and statistics definitions used by the existing DAAT.
+        ir_scan_ctdef->relevance_expr_ = nullptr;
+        ir_scan_ctdef->match_filter_ = nullptr;
+      }
       const ObCostTableScanInfo *est_cost_info = op.get_est_cost_info();
       int partition_row_cnt = 0;
       if (nullptr == est_cost_info

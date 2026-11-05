@@ -28,6 +28,8 @@ def main():
     parser.add_argument("--cpus", help="Optional comma-separated CPU IDs")
     parser.add_argument("--before-known-topk-error", action="store_true",
                         help="Record original BMW errors explicitly; candidate regressions stay strict")
+    parser.add_argument("--correctness-only", action="store_true",
+                        help="Run both regression oracles and hashes without benchmark timing")
     args = parser.parse_args()
     if args.pairs < 2 or args.pairs % 2:
         parser.error("--pairs must be a positive multiple of two")
@@ -66,6 +68,7 @@ def main():
             ["systemctl", "is-active", "systemd-timesyncd"],
             capture_output=True, text=True).stdout.strip(),
         "before_known_topk_error": args.before_known_topk_error,
+        "correctness_only": args.correctness_only,
     }
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     (root / "source.diff").write_bytes(subprocess.check_output(
@@ -169,7 +172,8 @@ def main():
     if (root / "correctness_before/known-topk-errors.json").exists():
         print("BASELINE HAS RECORDED BMW FAILURES; CANDIDATE PASSED STRICT TOP-K CHECKS", flush=True)
     reports = {}
-    for index, version in enumerate(["before", "after", "after", "before"] * (args.pairs // 2)):
+    versions = [] if args.correctness_only else ["before", "after", "after", "before"] * (args.pairs // 2)
+    for index, version in enumerate(versions):
         label = version + "_r" + str(index + 1)
         reports[label] = run(label, version, args.port + 2 + index)
         (root / "ab-results.json").write_text(json.dumps(reports, indent=2) + "\n")
@@ -179,9 +183,14 @@ def main():
     if any(digest(benchmark / name) != value
            for name, value in manifest["official_files"].items()):
         raise RuntimeError("Official benchmark file changed during validation")
-    (root / "SUCCESS").write_text(
-        "Candidate strict correctness and all nine benchmark metrics passed.\n"
-        "Any original BMW failures are recorded separately in correctness_before.\n")
+    if args.correctness_only:
+        (root / "CORRECTNESS_SUCCESS").write_text(
+            "Candidate strict correctness passed; unaffected A/B oracles match.\n"
+            "No benchmark timing was collected by this regression-only run.\n")
+    else:
+        (root / "SUCCESS").write_text(
+            "Candidate strict correctness and all nine benchmark metrics passed.\n"
+            "Any original BMW failures are recorded separately in correctness_before.\n")
 
 
 if __name__ == "__main__":

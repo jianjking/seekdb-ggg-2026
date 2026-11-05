@@ -34,12 +34,36 @@ int ObTextDaaTIter::init(const ObTextDaaTParam &param)
   } else {
     mode_flag_ = param.mode_flag_;
     function_lookup_mode_ = param.function_lookup_mode_;
+    batch_merge_enabled_ = mode_flag_ == sql::ObMatchAgainstMode::NATURAL_LANGUAGE_MODE
+        && !function_lookup_mode_ && iter_param_->eval_ctx_->is_vectorized()
+        && relevance_collector_->supports_batched_union()
+        && iter_param_->need_project_relevance() && dim_iters_->count() >= 2
+        && dim_iters_->count() <= MAX_BATCH_MERGE_DIMS;
+    if (batch_merge_enabled_) {
+      const int64_t capacity = dim_iters_->count() * iter_param_->eval_ctx_->max_batch_size_;
+      if (OB_FAIL(batch_id_cmp_.init(iter_param_->id_proj_expr_->obj_meta_))) {
+      }
+      for (int64_t i = 0; OB_SUCC(ret) && i < 2; ++i) {
+        batch_rows_[i].set_allocator(iter_allocator_);
+        if (OB_FAIL(batch_rows_[i].init(capacity))) {
+        } else if (OB_FAIL(batch_rows_[i].prepare_allocate(capacity))) {
+        }
+      }
+    }
   }
   return ret;
 }
 
 void ObTextDaaTIter::reset()
 {
+  batch_rows_[0].reset();
+  batch_rows_[1].reset();
+  batch_id_cmp_.reset();
+  batch_merge_enabled_ = false;
+  batch_ended_mask_ = 0;
+  batch_row_count_ = 0;
+  batch_row_pos_ = 0;
+  batch_buffer_idx_ = 0;
   bm25_param_estimator_.reset();
   // this class can know the type of dim_iters_, but ObSRDaaTIterImpl maybe not
   if (OB_NOT_NULL(dim_iters_)) {
@@ -52,6 +76,10 @@ void ObTextDaaTIter::reset()
 
 void ObTextDaaTIter::reuse(const bool switch_tablet)
 {
+  batch_ended_mask_ = 0;
+  batch_row_count_ = 0;
+  batch_row_pos_ = 0;
+  batch_buffer_idx_ = 0;
   if ((OB_NOT_NULL(dim_iters_) && 0 == dim_iters_->count())) {
     // do nothing
   } else {
@@ -72,6 +100,122 @@ int ObTextDaaTIter::pre_process()
     ret = OB_ITER_END;
   } else if (iter_param_->need_project_relevance()) {
     if (OB_FAIL(bm25_param_estimator_.do_estimation(*iter_param_->eval_ctx_))) {
+    }
+  }
+  return ret;
+}
+
+int ObTextDaaTIter::fill_merge_window()
+{
+  int ret = OB_SUCCESS;
+  const ObDocIdExt *ids[MAX_BATCH_MERGE_DIMS] = {};
+  const double *scores[MAX_BATCH_MERGE_DIMS] = {};
+  int64_t counts[MAX_BATCH_MERGE_DIMS] = {};
+  const ObDocIdExt *watermark = nullptr;
+  int cmp = 0;
+  for (int64_t dim = 0; OB_SUCC(ret) && dim < dim_iters_->count(); ++dim) {
+    if ((batch_ended_mask_ & (1ULL << dim)) != 0) {
+    } else if (OB_FAIL(static_cast<ObTextRetrievalDaaTTokenIter *>(dim_iters_->at(dim))
+        ->get_buffered_rows(ids[dim], scores[dim], counts[dim]))) {
+      if (ret == OB_ITER_END) {
+        batch_ended_mask_ |= 1ULL << dim;
+        ret = OB_SUCCESS;
+      }
+    } else if (watermark == nullptr) {
+      watermark = ids[dim] + counts[dim] - 1;
+    } else if (OB_FAIL(batch_id_cmp_.compare(
+        ids[dim][counts[dim] - 1].get_datum(), watermark->get_datum(), cmp))) {
+    } else if (cmp < 0) {
+      watermark = ids[dim] + counts[dim] - 1;
+    }
+  }
+  batch_row_count_ = 0;
+  batch_row_pos_ = 0;
+  if (OB_FAIL(ret)) {
+  } else if (watermark == nullptr) {
+    ret = OB_ITER_END;
+  } else {
+    // Every live list is buffered through this ID. No later load can add a
+    // contribution to a row in this window; pointers remain valid until output.
+    for (int64_t dim = 0; OB_SUCC(ret) && dim < dim_iters_->count(); ++dim) {
+      int64_t prefix = 0;
+      while (OB_SUCC(ret) && prefix < counts[dim]) {
+        if (OB_FAIL(batch_id_cmp_.compare(
+            ids[dim][prefix].get_datum(), watermark->get_datum(), cmp))) {
+        } else if (cmp > 0) {
+          break;
+        } else {
+          ++prefix;
+        }
+      }
+      BatchMergeRow *input = &batch_rows_[batch_buffer_idx_][0];
+      BatchMergeRow *output = &batch_rows_[1 - batch_buffer_idx_][0];
+      int64_t i = 0;
+      int64_t j = 0;
+      int64_t size = 0;
+      while (OB_SUCC(ret) && (i < batch_row_count_ || j < prefix)) {
+        if (i == batch_row_count_) {
+          cmp = 1;
+        } else if (j == prefix) {
+          cmp = -1;
+        } else if (OB_FAIL(batch_id_cmp_.compare(
+            input[i].id_->get_datum(), ids[dim][j].get_datum(), cmp))) {
+        }
+        if (OB_SUCC(ret)) {
+          if (cmp < 0) {
+            output[size++] = input[i++];
+          } else {
+            double relevance = scores[dim][j];
+            if (iter_param_->dim_weights_ != nullptr) {
+              relevance = relevance * iter_param_->field_boost_ * iter_param_->dim_weights_->at(dim);
+            }
+            output[size].id_ = ids[dim] + j;
+            if (cmp == 0) {
+              relevance = input[i++].relevance_ + relevance;
+            }
+            output[size++].relevance_ = relevance;
+            ++j;
+          }
+        }
+      }
+      if (OB_SUCC(ret)) {
+        static_cast<ObTextRetrievalDaaTTokenIter *>(dim_iters_->at(dim))->consume_buffered_rows(prefix);
+        batch_buffer_idx_ = 1 - batch_buffer_idx_;
+        batch_row_count_ = size;
+      }
+    }
+  }
+  return ret;
+}
+
+int ObTextDaaTIter::get_next_rows(const int64_t capacity, int64_t &count)
+{
+  int ret = OB_SUCCESS;
+  if (!batch_merge_enabled_) {
+    ret = ObSRDaaTIterImpl::get_next_rows(capacity, count);
+  } else if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+  } else if (capacity == 0) {
+    count = 0;
+  } else if (iter_param_->limit_param_->is_valid()
+      && output_row_cnt_ >= iter_param_->limit_param_->limit_) {
+    ret = OB_ITER_END;
+  } else if (OB_FAIL(pre_process())) {
+  } else {
+    count = 0;
+    const int64_t real_capacity = MIN(capacity, iter_param_->max_batch_size_);
+    while (OB_SUCC(ret) && count < real_capacity) {
+      if (batch_row_pos_ == batch_row_count_ && OB_FAIL(fill_merge_window())) {
+      } else {
+        const BatchMergeRow &row = batch_rows_[batch_buffer_idx_][batch_row_pos_++];
+        bool need_project = true;
+        if (OB_FAIL(filter_on_demand(count, row.relevance_, need_project))) {
+        } else if (need_project && OB_FAIL(cache_result(count, row.id_->get_datum(), row.relevance_))) {
+        }
+      }
+    }
+    if ((OB_SUCC(ret) || ret == OB_ITER_END) && count > 0
+        && OB_FAIL(project_results(count))) {
     }
   }
   return ret;

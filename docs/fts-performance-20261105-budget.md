@@ -15,9 +15,217 @@ The complete pre-budget patch is saved outside the repository at
 `/home/xiaob/fts-validation-20261105/checkpoint-before-budget-20261105.patch`.
 No earlier files or experimental binaries were deleted.
 
-## Current verified candidate versus original
+## Current verified candidate: batch union, binary ID and COUNT witness
 
-The current source is adc plus the BMW correctness fix and a single-worker
+The current source preserves 40881ac2, batch union and binary-ID comparison,
+and adds a narrowly gated positive-score witness for pure COUNT(*) with a
+sole natural-language Boolean MATCH condition. Projected scores, explicit
+thresholds, Boolean mode, boost, parameter text, sorting, LIMIT, HAVING,
+non-scalar grouping, subqueries and function/index-merge lookups keep scoring.
+The existing statistics definitions and DAAT selection remain intact.
+
+Binary: `/home/xiaob/fts-validation-20261105/bin/seekdb-fts-count-witness-v2`.
+SHA-256: `aa8c382f4e735efe91fb1172596384e66af967f759cd00a583bdfe51fdca983b`.
+Full link: `build-fts-count-witness-v2.log`, **46.923 seconds**, success.
+Source snapshot: `fts-count-witness-v2.source.diff`.
+The kernel changes remain uncommitted at the time of this measurement.
+
+Fresh four-pair original/candidate AB/BA, with all official parameters fixed:
+
+| Official metric | Unit | Original mean | Candidate mean | Reduction |
+| --- | --- | ---: | ---: | ---: |
+| build_ik_all_sec | s | 6.215000 | 3.963250 | +36.23089% |
+| build_ik_content_sec | s | 4.701250 | 2.935000 | +37.56980% |
+| build_beng_en_sec | s | 2.555250 | 1.511250 | +40.85706% |
+| tokenize_ik_avg_ms | ms | 0.149175 | 0.147825 | +0.90498% |
+| tokenize_beng_avg_ms | ms | 0.123400 | 0.102000 | +17.34198% |
+| query_cn_avg_ms | ms | 1.272600 | 0.768000 | +39.65111% |
+| query_beng_avg_ms | ms | 1.934825 | 1.030025 | +46.76392% |
+| query_mixed_avg_ms | ms | 1.441450 | 0.822600 | +42.93246% |
+| query_limit_avg_ms | ms | 1.748025 | 1.526300 | +12.68432% |
+
+Build **38.21925%**, TOKENIZE **9.12348%**, query **35.50795%**;
+three-category equal-weight reduction **27.61689%**. Descriptive four-pair
+bootstrap interval **24.86365%-30.08330%**. Local gap **22.38311 points**.
+TOKENIZE has visible host drift, especially the original BENG 0.1006-0.1518 ms
+range. All valid samples are retained; no TOKENIZE gain is causally assigned
+to query-only changes. This is local A/B, not an official full-score result.
+
+Report: `/home/xiaob/fts-validation-20261105/original-count-witness-ab-v2/`.
+All nine metrics completed. The strict candidate oracle passed with zero
+known-error allowances; original BMW failures are recorded separately.
+The full unaffected oracles, including independent BM25 checks, match.
+Official benchmark files and frozen executable hashes stayed unchanged.
+
+The isolated COUNT-witness eight-round A/B is `count-witness-isolated-ab-v2/`:
+build +1.15015%, TOKENIZE +3.02719%, query +17.05641%, overall +7.07792%
+versus binary comparison, descriptive interval 5.22999%-8.84705%.
+Only three COUNT queries are causally affected. Independent gains from
+different A/B runs must not be added to obtain the original-source result.
+
+Controlled ten-SQL windows (`count-witness-controlled-v2/`) show BM25 batch
+calls per COUNT reduced from CN/BENG/mixed 53/73/52 to **0/0/0**. LIMIT still
+uses 58 BM25 batches and 2186 BMW pivots. Posting traversal, merge windows,
+and output cardinality are unchanged. The filter function still runs, but
+its redundant Boolean expression evaluation is removed. Named process malloc
+entries fell from 101.2/130.5/114.3 to 86.1/108.3/92.1; these counts include
+background work and only one allocator overload.
+
+The first witness prototype never activated: `!has_group_by()` also rejects
+scalar COUNT. GDB confirmed the shape and NULL default parameter text.
+V2 uses `is_scala_group_by()` instead. V1's eight-round -1.08301% is retained
+as a non-activation result, not an estimate of the successful mechanism.
+
+The aux-queue/batch-union/binary confirmation in
+`aux-queue-batch-union-confirmation-ab/` also passed all eight rounds and strict
+oracles: query +22.94811%, overall +4.34807%, with interval crossing zero
+(-3.73074%-11.63806%) and unrelated build/TOKENIZE drift. This uncertainty is
+retained alongside the positive fresh original-source comparison.
+
+The extended DML oracle records indexed and PK-lookup scores separately and
+compares each full path between binaries. It does not assert that the two
+plans must produce identical scores after DML: that assumption fails on the
+original itself, as documented in `dml-cross-plan-oracle-rejected.md`.
+Independent formula tests and exact ranked-prefix assertions were not relaxed.
+
+### Remaining Quantified Budget
+
+The new acknowledged native profile `count-witness-long-cpu-v2/` has 30,000
+SQLs each for SELECT 1 and TOKENIZE, 12,000 each MATCH, with zero lost samples.
+Wall/user/system us per SQL: SELECT 1 101.45/22.67/46.67;
+IK 160.95/89.33/38.00; BENG 113.80/50.33/34.33;
+CN 828.08/725.00/58.33; BENG query 1061.12/958.33/61.67;
+mixed 866.18/751.67/69.17; LIMIT 1561.92/1450.00/61.67.
+These are instrumented diagnostic windows, not scored intervals.
+
+BENG merge-window inclusive user CPU 59.10% includes posting reads 30.40%
+and comparison. Projection 8.14%, caching 5.06%, and the no-op filter 1.67%
+are separate children outside that window. Their nested descendants must not
+be counted again. A projection-only rewrite has no demonstrated large wall
+budget: even p_wall=0.15 and infinite speed supplies only about 2.13 original
+points; 2x component speed supplies 1.07. Defer that broad rewrite.
+
+TOKENIZE parse_param is 8.99% IK / 11.63% BENG user CPU; segmentation is
+39.63% / 14.44%. These are CPU fractions, not elapsed savings.
+Cross-SQL IK result caching has no proved dictionary invalidation contract
+and is not implemented. Unchanged SQL-loop fixed costs cannot be attributed
+to parser work by subtracting two noisy windows.
+
+Two minimal storage counterfactual gates have now completed without native
+edits. Integer IDs (`integer-id-gate-v1/`) match all full ID/BM25 results but
+reduce the four-query class only about 8.8%, below the 15% expansion gate,
+with a LIMIT regression. Reject explicit signed-PK migration.
+
+Flat storage (`row-format-gate-v1/`) also matches all full ID/BM25 results,
+but encoded/flat means in ms are CN 0.72475/1.59377,
+BENG 0.96763/2.17504, mixed 0.76013/1.59054 and
+LIMIT 1.40704/2.36285. Reject format replacement: all four queries regress.
+These are isolated diagnostic schema variants, never official scores.
+Both servers exited. Do not expand these weak directions.
+
+Even zero query time with current build/TOKENIZE would yield only
+**49.11424%** overall. If TOKENIZE is frozen, equally improved build/query
+would each need **70.43826%** original-source reductions. Those require
+another **52.15057%** of current build time and **54.16220%** of current query
+time. No measured combination yet demonstrates a credible path to 50%.
+
+## Historical batch-union and binary-ID candidate
+
+The new frozen candidate contains the preserved 40881ac2 queue/BMW work,
+watermark-bounded pairwise posting-batch union, and fixed-width binary-ID
+comparison. It has not yet been committed. It contains no internal-PX-degree
+experiment or exhaustive Top-K selection experiment.
+
+Binary: `/home/xiaob/fts-validation-20261105/bin/seekdb-fts-binary-compare-v1`.
+SHA-256: `d3f1c7037cf632f4ece94428c022316373fe3f7a6d9d9a34d965248a35d35b8e`.
+Full link: `build-fts-binary-compare-v1.log`, **37.581 seconds**, success.
+Frozen source: `fts-binary-compare-v1.source.diff`.
+
+Four complete original/candidate AB/BA pairs, all official parameters unchanged:
+
+| Official metric | Unit | Original mean | Candidate mean | Reduction |
+| --- | --- | ---: | ---: | ---: |
+| build_ik_all_sec | s | 6.232250 | 3.861500 | +38.04003% |
+| build_ik_content_sec | s | 4.537000 | 2.754750 | +39.28257% |
+| build_beng_en_sec | s | 2.577000 | 1.426000 | +44.66434% |
+| tokenize_ik_avg_ms | ms | 0.151750 | 0.139125 | +8.31960% |
+| tokenize_beng_avg_ms | ms | 0.108975 | 0.097250 | +10.75935% |
+| query_cn_avg_ms | ms | 1.276050 | 0.949350 | +25.60245% |
+| query_beng_avg_ms | ms | 1.843900 | 1.302475 | +29.36303% |
+| query_mixed_avg_ms | ms | 1.397200 | 1.058300 | +24.25565% |
+| query_limit_avg_ms | ms | 1.650725 | 1.488875 | +9.80478% |
+
+Build **40.66231%**, TOKENIZE **9.53948%**, query **22.25648%**;
+three-category equal-weight reduction **24.15276%**. Descriptive four-pair
+interval: **22.00571%-26.00223%**. Local gap to 50%: **25.84724 points**.
+These are local results, not an official score or a claim of completion.
+TOKENIZE source was not changed by these query mechanisms; its movement is
+reported but is not causally credited to the new query code.
+
+Report: `/home/xiaob/fts-validation-20261105/original-binary-compare-ab-v1/`.
+Both strict oracles match except separately recorded original BMW failures.
+The new boundary fixture compares all 5000 IDs and independent BM25 scores
+(including the existing average-length floor of 10), exhausted/absent streams,
+COUNT/SUM, OFFSET/LIMIT, and prepared-statement parameter changes.
+Candidate has zero known-error allowances. Binary and official file hashes
+are checked by the harness before and after all eight rounds.
+
+### Independent Mechanism Gates
+
+| Mechanism | Evidence and budget | Actual result / decision |
+| --- | --- | --- |
+| Internal FTS SQL PX degree 2 | Seven-line isolated experiment; conditional 4.94-6.91 overall points at p_build=0.50-0.70 and 2x execution | Eight rounds: build -0.97574%, overall -5.94846%; removed, source/logs retained externally |
+| Unique-leading posting spans | Exact hit sets have longest single-dimension runs only 1/1/2 in primary-key order; physical ID order not proven equivalent | No credible long-span budget; rejected before kernel implementation |
+| Watermark-bounded posting-batch union | Simplified independent-heap prototype 2.43-3.55x; conditional ~7.4 overall points, not an elapsed forecast | Isolated eight rounds versus aux-queue: query +11.71413%, overall +7.88375%, overall interval crosses zero; strict oracle passes |
+| Same union versus original | Full original A/B, all valid outliers retained | Build +32.79103%, TOKENIZE -11.27410%, query +9.24588%, overall +10.25427%; did not supersede historical best alone |
+| Fixed-width binary-ID comparisons | Long native profile: ~19%-23% inclusive user CPU in ID comparison for the three COUNT queries; not wall coverage. Conditional p=20%, component 4x: 5 overall points | Isolated eight rounds versus batch union: query +12.83474%, causal weighted query contribution +4.27825 points; overall +2.81814%, interval crosses zero. Combined original gate above passes |
+| Exhaustive batch retrieval before existing exact Top-K sort | Only LIMIT affected; absolute ceiling 8.33 points. Conditional p=0.35-0.50 at 2-3x: 1.46-2.78 points | Linked in 49.408 s; strict oracles match. Eight rounds: LIMIT +5.15599% (+0.42967 weighted points), overall -2.51708%; rejected and removed |
+
+The union's watermark is the minimum buffered last-ID among live lists.
+Every posting through that ID is already loaded, so pairwise union can sum
+all contributions without per-document heap operations. Scratch storage is
+bounded by term count times batch size. Buffered ID pointers remain valid
+until that output window is consumed. Boolean, minimum_should_match > 1,
+function lookup and BMW retain their prior algorithm.
+
+Binary-ID comparison is selected only for Varchar + binary collation at
+iterator initialization. Non-null, non-extended 16-byte IDs use byte comparison;
+all other lengths, NULL and sentinels retain the generic comparison. It does
+not reinterpret little-endian document-ID fields as numeric sort order.
+
+`window-merge-long-cpu-v1/` has seven acknowledged diagnostic windows:
+20,000 statements for SELECT 1 / each TOKENIZE, 6000 for each MATCH. No lost
+samples were reported. Diagnostic wall/user/system microseconds per SQL:
+SELECT 1 72.98/18.50/30.00; IK 141.42/73.50/36.50;
+BENG 109.70/41.00/38.00. IK parse_param is 10.32% and segment 42.09%
+inclusive user CPU; BENG 12.17% and 13.63%. These sibling fractions are not
+elapsed ablations. Parser-property or JSON-output work alone has no demonstrated
+large budget, so no further speculative rewrite was made.
+
+Controlled counters in `controlled-window-merge-v1/` show per SQL:
+CN 54 merge windows / 8001 filters / 55 reads; BENG 67 / 11000 / 76;
+mixed 52 / 7332 / 55. Their old heap merge rounds are now zero. LIMIT is
+unchanged at 2186 BMW pivots / 58 reads. Process-wide entries to one malloc
+overload were 19.26/12.16 for IK/BENG, not counts of all FTS suballocations.
+
+The exhaustive Top-K selection was actually executed, not an ineligible
+no-op: `controlled-exhaustive-topk-v2/` records per LIMIT SQL zero BMW pivots,
+57 merge windows, 9333 filters and 61 posting reads. Replacing pivot work
+introduced full-result filtering and more reads. The measured gain did not
+justify expanding the prototype. Its isolated patch is retained externally as
+`exhaustive-topk-rejected.patch`; the query-planning file has no remaining diff.
+The initial non-root probe attempt lacked tracefs permission and has no valid
+counts. The root retry removed all temporary events and exited its instance.
+
+No validated combination yet establishes a credible >=50% path. Even zero
+query time with the latest observed build/TOKENIZE means would yield only
+50.06726% overall, so query-only development would require effectively
+eliminating the entire query category. New build/TOKENIZE architecture work
+still needs independently measured budgets. No push or official test was made.
+
+## Historical Verified Candidate: 40881ac2
+
+The 40881ac2 source is adc plus the BMW correctness fix and a single-worker
 FTS doc-word queue in mini mode. It contains none of the rejected sorting,
 direct-merge, typed-property/galloping or document-batch experiments.
 The general mini-mode DDL queue remains single-threaded; non-mini mode is unchanged.
@@ -449,14 +657,13 @@ No measured combination yet supports the 50% target.
 
 ## Next executable steps
 
-1. Preserve the verified FTS-only queue and BMW fix; both original-source and
-   isolated eight-round comparisons are complete.
-2. Use `controlled-fts-aux-queue-v3/counts.json` and the current-candidate query
-   CPU recordings for a minimal batch-merge/aggregate feasibility experiment.
-   Its first gate is reduced row transitions and a measured elapsed budget,
-   before broad C++ changes. Do not resume generic worker-count, sort, direct
-   scalar merge or BM25-arithmetic micro-optimization.
-3. Any accepted next candidate needs a new full link, strict oracle and exact
-   original-versus-candidate nine-metric A/B. Current local reduction is 14.28146%.
-4. Preserve all valid and rejected results, record the next command, and keep
-   TASK_STATUS=INCOMPLETE until official full score is actually confirmed.
+1. Preserve the verified queue, BMW fix, batch union, binary-ID comparison and
+   COUNT witness. Current full original-source A/B is **27.61689%** overall.
+2. Integer-ID and flat-storage gates are rejected. Evaluate a count-only
+   execution path's actual data dependencies and work scale before expanding
+   any document-materialization or aggregate prototype. TOKENIZE/build still
+   require independently demonstrated mechanisms.
+3. Any retained kernel change needs full link, strict complete oracles, an
+   isolated nine-metric A/B and a fresh original/candidate comparison.
+4. Preserve every experiment and an exact recovery command; official >=50%
+   full-score confirmation is still required. TASK_STATUS=INCOMPLETE.

@@ -55,18 +55,40 @@ public:
   ObTextDaaTIter() : ObSRDaaTIterImpl(),
       bm25_param_estimator_(),
       mode_flag_(sql::ObMatchAgainstMode::NATURAL_LANGUAGE_MODE),
-      function_lookup_mode_(false) {}
+      function_lookup_mode_(false),
+      batch_merge_enabled_(false),
+      batch_ended_mask_(0),
+      batch_row_count_(0),
+      batch_row_pos_(0),
+      batch_buffer_idx_(0),
+      batch_id_cmp_() {}
   virtual ~ObTextDaaTIter() { reset(); }
 
   int init(const ObTextDaaTParam &param);
   virtual void reuse(const bool switch_tablet = false) override;
   virtual void reset() override;
+  virtual int get_next_rows(const int64_t capacity, int64_t &count) override;
 protected:
   virtual int pre_process() override;
+  int fill_merge_window();
 protected:
+  struct BatchMergeRow {
+    BatchMergeRow() : id_(nullptr), relevance_(0.0) {}
+    TO_STRING_KV(KP_(id), K_(relevance));
+    const ObDocIdExt *id_;
+    double relevance_;
+  };
+  static const int64_t MAX_BATCH_MERGE_DIMS = 8;
   ObBM25ParamEstimator bm25_param_estimator_;
   sql::ObMatchAgainstMode mode_flag_;
   bool function_lookup_mode_;
+  bool batch_merge_enabled_;
+  uint64_t batch_ended_mask_;
+  int64_t batch_row_count_;
+  int64_t batch_row_pos_;
+  int64_t batch_buffer_idx_;
+  ObFixedArray<BatchMergeRow, ObIAllocator> batch_rows_[2];
+  ObDomainIdCmp batch_id_cmp_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObTextDaaTIter);
 };

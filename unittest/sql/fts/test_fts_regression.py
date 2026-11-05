@@ -192,7 +192,22 @@ def main():
         for doc_id, expected in expected_scores.items():
             assert math.isclose(actual[doc_id], expected, rel_tol=1e-12), (
                 query, doc_id, actual[doc_id], expected)
+        assert int(sql(
+            "SELECT COUNT(*) FROM docs WHERE MATCH(content) AGAINST('%s')" % query)
+        ) == len(expected_scores), query
+        for threshold in (0, 0.5, 2):
+            assert int(sql(
+                "SELECT COUNT(*) FROM docs WHERE MATCH(content) AGAINST('%s') > %.1f"
+                % (query, threshold))
+            ) == sum(score > threshold for score in expected_scores.values()), (
+                query, threshold, expected_scores)
         results["multi_" + query] = actual
+    for query, expected_count in (("", 0), ("the or", 0),
+                                   ("alpha alpha beta", 5)):
+        assert int(sql(
+            "SELECT COUNT(*) FROM docs WHERE MATCH(content) AGAINST('%s')" % query)
+        ) == expected_count, query
+    results["pure_count_and_score_thresholds"] = "passed"
     for limit in (0, 1, 2, 4, 20):
         output = sql(
             "SELECT id FROM docs WHERE MATCH(content) AGAINST('alpha') "
@@ -227,6 +242,17 @@ def main():
     assert matched("secondmarker") == ""
     sql("START TRANSACTION; INSERT INTO docs VALUES (15,'rollbackmarker'); ROLLBACK")
     assert matched("rollbackmarker") == ""
+    query = "alpha beta zeta"
+    selected = "SELECT id, MATCH(content) AGAINST('%s') AS score FROM docs " % query
+    merged = sql(selected + "WHERE MATCH(content) AGAINST('%s') ORDER BY id" % query)
+    assert [int(line.split("\t")[0]) for line in merged.splitlines()] == [1, 2, 6, 7, 8, 9, 11]
+    looked_up = sql(selected + "WHERE id IN (1,2,6,7,8,9,11) ORDER BY id")
+    assert [int(line.split("\t")[0]) for line in looked_up.splitlines()] == [1, 2, 6, 7, 8, 9, 11]
+    for output in (merged, looked_up):
+        assert all(math.isfinite(float(line.split("\t")[1]))
+                   and float(line.split("\t")[1]) > 0 for line in output.splitlines())
+    results["dml_multi_term_scores"] = merged
+    results["dml_lookup_scores"] = looked_up
     results["dml"] = "passed"
     sql("CREATE TABLE ikdocs(id INT PRIMARY KEY, content TEXT)")
     sql("INSERT INTO ikdocs VALUES (1,'全文索引 分词器 数据库'),"
@@ -236,6 +262,8 @@ def main():
         "SELECT id, MATCH(content) AGAINST('分词器') AS score FROM ikdocs "
         "WHERE MATCH(content) AGAINST('分词器') ORDER BY score DESC,id")
     assert len(results["match_ik"].splitlines()) == 2
+    assert sql("SELECT COUNT(*) FROM ikdocs WHERE "
+               "MATCH(content) AGAINST('全文索引 分词器')") == "2"
     # Cross a generated-output batch boundary inside one document, with empty
     # documents on either side, and compare the retained term count via BM25.
     batch_words = ["batchword" + chr(ord("a") + i // (26 * 26))
@@ -314,6 +342,39 @@ def main():
                     continue
                 assert top_scores == all_scores[:limit], (table, limit, top_scores[:3])
             results[table + "_topk"] = all_scores[:20]
+        if table == "many_unique":
+            query = "evenmarker commonmarker absentmarker"
+            output = sql(
+                "SELECT id, MATCH(content) AGAINST('%s') AS score FROM %s "
+                "WHERE MATCH(content) AGAINST('%s') ORDER BY id" % (query, table, query))
+            rows = [line.split("\t") for line in output.splitlines()]
+            assert [int(row[0]) for row in rows] == list(range(1, 5001))
+            # ObBM25ParamEstimator clamps average length to the BM25 default.
+            avg_doc_length = max(4.5, 10.0)
+            for value, score in rows:
+                doc_id = int(value)
+                length = 4 + (doc_id % 2 == 0)
+                occurrences = 1 + (doc_id % 2 == 0)
+                expected = occurrences * 0.25 * 2.2 / (
+                    1 + 1.2 * (0.25 + 0.75 * length / avg_doc_length))
+                assert math.isclose(float(score), expected, rel_tol=1e-12), (
+                    doc_id, score, expected)
+            assert sql(
+                "SELECT COUNT(*),SUM(id) FROM %s WHERE MATCH(content) "
+                "AGAINST('evenmarker absentmarker')" % table) == "2500\t6252500"
+            assert sql(
+                "SELECT COUNT(*),SUM(id) FROM (SELECT id FROM %s WHERE MATCH(content) "
+                "AGAINST('%s') ORDER BY id LIMIT 7,257) t" % (table, query)
+            ) == "257\t34952"
+            prepared = sql(
+                "PREPARE window_stmt FROM 'SELECT COUNT(*) FROM many_unique "
+                "WHERE MATCH(content) AGAINST(?)'; "
+                "SET @q='evenmarker absentmarker'; EXECUTE window_stmt USING @q; "
+                "SET @q='absentmarker secondabsent'; EXECUTE window_stmt USING @q; "
+                "SET @q='cafe evenmarker'; EXECUTE window_stmt USING @q; "
+                "DEALLOCATE PREPARE window_stmt")
+            assert prepared.splitlines() == ["2500", "0", "5000"], prepared
+            results["posting_window_boundaries"] = "passed"
     args.output.write_text(json.dumps(results, indent=2, sort_keys=True) + "\n")
     status = "passed"
     if known_errors:
