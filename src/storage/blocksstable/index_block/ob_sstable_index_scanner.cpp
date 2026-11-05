@@ -331,7 +331,13 @@ int ObSSTableIndexBlockLevelScanner::advance_to(const ObDatumRowkey &rowkey, con
     }
 
     if (OB_SUCC(ret) && !found_advanced_key) {
-      ret = OB_ERR_UNEXPECTED;
+      // Seeking exclusively past a prefetched block can leave it empty.
+      // Let the parent supply the next block instead of treating this as an
+      // internal error. Only the root can prove exhaustion of the whole range.
+      block_opened_ = false;
+      if (is_root_block_) {
+        iter_end_ = true;
+      }
     }
   } else {
     // advance to rowkey that is not prefetched yet

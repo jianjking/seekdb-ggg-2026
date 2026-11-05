@@ -26,6 +26,8 @@ def main():
     parser.add_argument("--port", type=int, default=2941)
     parser.add_argument("--pairs", type=int, default=2)
     parser.add_argument("--cpus", help="Optional comma-separated CPU IDs")
+    parser.add_argument("--before-known-topk-error", action="store_true",
+                        help="Record original BMW errors explicitly; candidate regressions stay strict")
     args = parser.parse_args()
     if args.pairs < 2 or args.pairs % 2:
         parser.error("--pairs must be a positive multiple of two")
@@ -63,6 +65,7 @@ def main():
         "timesyncd_active": subprocess.run(
             ["systemctl", "is-active", "systemd-timesyncd"],
             capture_output=True, text=True).stdout.strip(),
+        "before_known_topk_error": args.before_known_topk_error,
     }
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     (root / "source.diff").write_bytes(subprocess.check_output(
@@ -94,10 +97,13 @@ def main():
                     raise RuntimeError("Server start timeout: " + label)
                 print("START " + label, flush=True)
                 if correctness:
+                    baseline_options = []
+                    if version == "before" and args.before_known_topk_error:
+                        baseline_options = ["--allow-known-baseline-topk-error"]
                     subprocess.run(
                         ["python3", str(Path(__file__).with_name("test_fts_regression.py")),
                          "--client", str(client), "--port", str(port),
-                         "--output", str(directory / "correctness.json")],
+                         "--output", str(directory / "correctness.json")] + baseline_options,
                         env=env, check=True)
                     return json.loads((directory / "correctness.json").read_text())
                 command = f"{client} -h127.0.0.1 -P{port} -uroot --default-character-set=utf8mb4"
@@ -159,7 +165,9 @@ def main():
     after = run("correctness_after", "after", args.port + 1, True)
     if before != after:
         raise RuntimeError("Correctness A/B mismatch")
-    print("CORRECTNESS A/B IDENTICAL", flush=True)
+    print("CORRECTNESS ORACLES A/B IDENTICAL", flush=True)
+    if (root / "correctness_before/known-topk-errors.json").exists():
+        print("BASELINE HAS RECORDED BMW FAILURES; CANDIDATE PASSED STRICT TOP-K CHECKS", flush=True)
     reports = {}
     for index, version in enumerate(["before", "after", "after", "before"] * (args.pairs // 2)):
         label = version + "_r" + str(index + 1)
@@ -171,7 +179,9 @@ def main():
     if any(digest(benchmark / name) != value
            for name, value in manifest["official_files"].items()):
         raise RuntimeError("Official benchmark file changed during validation")
-    (root / "SUCCESS").write_text("Correctness and all nine metrics passed.\n")
+    (root / "SUCCESS").write_text(
+        "Candidate strict correctness and all nine benchmark metrics passed.\n"
+        "Any original BMW failures are recorded separately in correctness_before.\n")
 
 
 if __name__ == "__main__":
