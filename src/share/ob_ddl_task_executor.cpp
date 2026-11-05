@@ -241,8 +241,10 @@ void ObDDLTaskExecutor::run1()
 
 ObDDLLocalBuilder::ObDDLLocalBuilder()
   : is_thread_started_(false),
+    is_fts_thread_started_(false),
     is_stopped_(true),
-    task_queue_()
+    task_queue_(),
+    fts_task_queue_()
 {
 
 }
@@ -261,11 +263,15 @@ int ObDDLLocalBuilder::init()
     ret = OB_STATE_NOT_MATCH;
   } else if (OB_FAIL(task_queue_.init(get_thread_cnt_(), 4 << 10, "DdlBuild"))) {
   } else if (OB_FAIL(task_queue_.start())) {
+  } else if (lib::is_mini_mode() && OB_FAIL(fts_task_queue_.init(1, 4 << 10, "FtsDdlBuild"))) {
+  } else if (lib::is_mini_mode() && OB_FAIL(fts_task_queue_.start())) {
   } else {
     is_thread_started_ = true;
+    is_fts_thread_started_ = lib::is_mini_mode();
     is_stopped_ = true;
   }
   if (OB_FAIL(ret)) {
+    fts_task_queue_.destroy();
     task_queue_.destroy();
   }
   FLOG_INFO("[DDL_LOCAL_BUILDER] finish init ddl local builder",
@@ -306,6 +312,9 @@ void ObDDLLocalBuilder::server_module_thread_stop()
   if (is_thread_started_) {
     task_queue_.stop();
   }
+  if (is_fts_thread_started_) {
+    fts_task_queue_.stop();
+  }
   FLOG_INFO("[DDL_LOCAL_BUILDER] finish server_module_thread_stop ddl local builder",
             K(is_thread_started_), K(is_stopped_));
 }
@@ -316,6 +325,9 @@ void ObDDLLocalBuilder::server_module_thread_wait()
             K(is_thread_started_), K(is_stopped_));
   if (is_thread_started_) {
     task_queue_.wait();
+  }
+  if (is_fts_thread_started_) {
+    fts_task_queue_.wait();
   }
   FLOG_INFO("[DDL_LOCAL_BUILDER] finish server_module_thread_wait ddl local builder",
             K(is_thread_started_), K(is_stopped_));
@@ -331,18 +343,27 @@ void ObDDLLocalBuilder::destroy()
       task_queue_.destroy();
       is_thread_started_ = false;
     }
+    if (is_fts_thread_started_) {
+      fts_task_queue_.destroy();
+      is_fts_thread_started_ = false;
+    }
   }
   FLOG_INFO("[DDL_LOCAL_BUILDER] finish destroy ddl local builder",
             K(is_thread_started_), K(is_stopped_));
 }
 
-int ObDDLLocalBuilder::push_task(ObAsyncTask &task)
+int ObDDLLocalBuilder::push_task(ObAsyncTask &task, const bool is_fts_doc_word)
 {
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(!is_thread_started_)) {
     ret = OB_ERR_SYS;
   } else if (is_stopped_) {
     ret = OB_STATE_NOT_MATCH;
+  } else if (is_fts_doc_word && is_fts_thread_started_) {
+    // Keep doc-word work independent of the inverted build without increasing
+    // concurrency for unrelated mini-mode DDL tasks.
+    if (OB_FAIL(fts_task_queue_.push(task))) {
+    }
   } else if (OB_FAIL(task_queue_.push(task))) {
   }
   return ret;
