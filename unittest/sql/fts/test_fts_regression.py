@@ -406,18 +406,31 @@ def main():
                 "MATCH(content) AGAINST('commonmarker evenmarker')"
             ) == "257"
             results["cardinality_only_batch_stream"] = "passed"
+    def limited_count_sql(statement):
+        try:
+            return sql(statement)
+        except RuntimeError as error:
+            if not args.allow_known_baseline_topk_error or "ERROR 4016" not in str(error):
+                raise
+            known_errors.append({"table": "many_unique",
+                                 "query": statement, "error": str(error)})
+            return None
+
     for terms, total in (("commonmarker evenmarker", 5000),
                          ("evenmarker absentmarker", 2500),
                          ("absentmarker secondabsent", 0)):
         for offset, limit in ((0, 0), (0, 1), (0, 20), (7, 257),
                               (2499, 20), (6000, 20)):
-            actual = int(sql(
+            output = limited_count_sql(
                 "SELECT COUNT(*) FROM (SELECT id FROM many_unique WHERE "
                 "MATCH(content) AGAINST('%s') LIMIT %d,%d) t"
-                % (terms, offset, limit)))
+                % (terms, offset, limit))
+            if output is None:
+                continue
+            actual = int(output)
             assert actual == min(limit, max(0, total - offset)), (
                 terms, offset, limit, actual, total)
-    prepared = sql(
+    prepared = limited_count_sql(
         "PREPARE limited_count FROM 'SELECT COUNT(*) FROM (SELECT id FROM "
         "many_unique WHERE MATCH(content) AGAINST(?) LIMIT ?,?) t'; "
         "SET @q='commonmarker evenmarker', @skip=7, @take=20; "
@@ -427,7 +440,8 @@ def main():
         "SET @q='absentmarker secondabsent', @skip=0; "
         "EXECUTE limited_count USING @q,@skip,@take; "
         "DEALLOCATE PREPARE limited_count")
-    assert prepared.splitlines() == ["20", "1", "0"], prepared
+    if prepared is not None:
+        assert prepared.splitlines() == ["20", "1", "0"], prepared
     assert sql(
         "SELECT COUNT(*) FROM (SELECT NULL FROM many_unique WHERE "
         "MATCH(content) AGAINST('commonmarker evenmarker') LIMIT 20) t"
@@ -440,7 +454,10 @@ def main():
         "SELECT COUNT(*) FROM (SELECT id FROM many_unique WHERE "
         "MATCH(content) AGAINST('commonmarker evenmarker') LIMIT 20) t WHERE id<0"
     ) == "0"
-    results["count_over_limit"] = "passed"
+    # Expected oracle, not a claim that an explicitly exempted baseline passed.
+    # All baseline exceptions are retained in known-topk-errors.json.
+    results["count_over_limit"] = {"prepared_expected": ["20", "1", "0"],
+                                   "parameter_cases": 18}
     args.output.with_name("count-limit-explain.txt").write_text(sql(
         "EXPLAIN SELECT COUNT(*) FROM (SELECT id FROM many_unique WHERE "
         "MATCH(content) AGAINST('commonmarker evenmarker') LIMIT 20) t") + "\n")
