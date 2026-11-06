@@ -159,6 +159,57 @@ int ObTextDaaTIter::fill_merge_window()
   if (OB_FAIL(ret)) {
   } else if (watermark == nullptr) {
     ret = OB_ITER_END;
+  } else if (cardinality_only_) {
+    int64_t positions[MAX_BATCH_MERGE_DIMS] = {};
+    int64_t live_count = 0;
+    int64_t live_dim = 0;
+    for (int64_t dim = 0; dim < dim_iters_->count(); ++dim) {
+      if (counts[dim] > 0) {
+        ++live_count;
+        live_dim = dim;
+      }
+    }
+    bool exhausted = live_count == 1;
+    if (exhausted) {
+      batch_row_count_ = positions[live_dim] = counts[live_dim];
+    }
+    while (OB_SUCC(ret) && !exhausted) {
+      const ObDocIdExt *minimum = nullptr;
+      uint64_t equal_mask = 0;
+      for (int64_t dim = 0; OB_SUCC(ret) && dim < dim_iters_->count(); ++dim) {
+        if (positions[dim] < counts[dim]) {
+          const ObDocIdExt *head = ids[dim] + positions[dim];
+          if (minimum == nullptr) {
+            minimum = head;
+            equal_mask = 1ULL << dim;
+          } else if (OB_FAIL(compare_batch_doc_id(
+              head->get_datum(), minimum->get_datum(), batch_id_cmp_, binary_id, cmp))) {
+          } else if (cmp < 0) {
+            minimum = head;
+            equal_mask = 1ULL << dim;
+          } else if (cmp == 0) {
+            equal_mask |= 1ULL << dim;
+          }
+        }
+      }
+      if (OB_SUCC(ret)) {
+        ++batch_row_count_;
+        // Consume every equal head before refilling any list. Once one buffer
+        // ends, its next ID is unknown, so the next union step needs a refill.
+        for (int64_t dim = 0; dim < dim_iters_->count(); ++dim) {
+          if ((equal_mask & (1ULL << dim)) != 0) {
+            ++positions[dim];
+            if (positions[dim] == counts[dim]) {
+              exhausted = true;
+            }
+          }
+        }
+      }
+    }
+    for (int64_t dim = 0; OB_SUCC(ret) && dim < dim_iters_->count(); ++dim) {
+      static_cast<ObTextRetrievalDaaTTokenIter *>(dim_iters_->at(dim))
+          ->consume_buffered_rows(positions[dim]);
+    }
   } else {
     // Every live list is buffered through this ID. No later load can add a
     // contribution to a row in this window; pointers remain valid until output.
