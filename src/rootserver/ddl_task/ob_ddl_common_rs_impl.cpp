@@ -345,6 +345,8 @@ int ObDDLTaskUtil::generate_build_replica_sql(const int64_t data_table_id,
     bool is_shadow_column = false;
     const int64_t real_parallelism = ObDDLTaskUtil::get_real_parallelism(parallelism);
     const bool is_rowkey_doc_aux_table = dest_table_schema->is_rowkey_doc_id();
+    bool enable_fts_encoded_sort = dest_table_schema->is_fts_index_aux()
+                                   || dest_table_schema->is_fts_doc_word_aux();
     uint64_t doc_id_col_id = OB_INVALID_ID;
     uint64_t ft_id_col_id = OB_INVALID_ID;
     // get dest table column names
@@ -458,6 +460,17 @@ int ObDDLTaskUtil::generate_build_replica_sql(const int64_t data_table_id,
           // generated columns cannot be row key.
         } else if (OB_FAIL(rowkey_column_names.push_back(ObColumnNameInfo(column_schema->get_column_name_str(), is_shadow_column)))) {
         } else if (OB_FAIL(order_column_ids.push_back(col_id))) {
+        } else if (enable_fts_encoded_sort) {
+          const ObObjType type = column_schema->get_data_type();
+          const ObCollationType collation = column_schema->get_collation_type();
+          // Keep other types and collations on the existing DDL sorting path.
+          if (ObVarcharType == type) {
+            enable_fts_encoded_sort = CS_TYPE_BINARY == collation
+                                      || CS_TYPE_UTF8MB4_BIN == collation
+                                      || CS_TYPE_UTF8MB4_GENERAL_CI == collation;
+          } else if (ObIntType != type && ObUInt64Type != type) {
+            enable_fts_encoded_sort = false;
+          }
         }
       }
     }
@@ -532,10 +545,14 @@ int ObDDLTaskUtil::generate_build_replica_sql(const int64_t data_table_id,
         if (dest_table_schema->is_vec_vid_rowkey_type()) {
           src_table_schema_version_hint_sql_string.reset();
         }
+        const char *newsort_hint = "false";
+        if (enable_fts_encoded_sort) {
+          newsort_hint = "true";
+        }
         if (OB_FAIL(ret)) {
         } else {
-          if (OB_FAIL(sql_string.assign_fmt("INSERT /*+ enable_parallel_dml parallel(%ld) opt_param('ddl_execution_id', %ld) opt_param('ddl_task_id', %ld) opt_param('enable_newsort', 'false') %.*s use_px */INTO `%.*s`.`%.*s` %.*s(%.*s) SELECT /*+ index(`%.*s` primary) %.*s */ %.*s from `%.*s`.`%.*s` %.*s as of snapshot %ld %.*s",
-              real_parallelism, execution_id, task_id,
+          if (OB_FAIL(sql_string.assign_fmt("INSERT /*+ enable_parallel_dml parallel(%ld) opt_param('ddl_execution_id', %ld) opt_param('ddl_task_id', %ld) opt_param('enable_newsort', '%s') %.*s use_px */INTO `%.*s`.`%.*s` %.*s(%.*s) SELECT /*+ index(`%.*s` primary) %.*s */ %.*s from `%.*s`.`%.*s` %.*s as of snapshot %ld %.*s",
+              real_parallelism, execution_id, task_id, newsort_hint,
               static_cast<int>(strlen(io_read_hint)), io_read_hint,
               static_cast<int>(new_dest_database_name.length()), new_dest_database_name.ptr(), static_cast<int>(new_dest_table_name.length()), new_dest_table_name.ptr(),
               static_cast<int>(partition_names.length()), partition_names.ptr(),

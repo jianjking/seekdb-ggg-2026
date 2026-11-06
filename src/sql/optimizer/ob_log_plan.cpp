@@ -12734,6 +12734,9 @@ int ObLogPlan::try_push_topn_into_text_retrieval_scan(ObLogicalOperator *&top,
   } else if (OB_FALSE_IT(table_scan = static_cast<ObLogTableScan*>(top))) {
   } else if (!table_scan->is_text_retrieval_scan() || table_scan->use_index_merge()) {
     // do nothing
+  } else if (sort_keys.count() != 1 || is_fetch_with_ties) {
+    // Relevance-only Top-N can omit ties needed by the outer ordering.
+    // Keep the complete retrieval stream for secondary keys and WITH TIES.
   } else if (table_scan->get_filter_exprs().count() != 0 ||
              table_scan->get_pushdown_filter_exprs().count() != 0) {
     // do nothing, topn pushdown requires that only match filter exists on the base table.

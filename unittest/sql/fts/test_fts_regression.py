@@ -15,7 +15,7 @@ def main():
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--allow-known-baseline-topk-error", action="store_true",
-                        help="Record the reproduced original BMW 4016 defect; never use for candidates")
+                        help="Record baseline BMW errors or tie omissions; never use for candidates")
     args = parser.parse_args()
     results = {}
     known_errors = []
@@ -375,6 +375,34 @@ def main():
                 "DEALLOCATE PREPARE window_stmt")
             assert prepared.splitlines() == ["2500", "0", "5000"], prepared
             results["posting_window_boundaries"] = "passed"
+    # A secondary key requires every row tied at the relevance cutoff.
+    # Negative primary keys also prevent physical DocID order from masking it.
+    sql("CREATE TABLE tied_docs(id BIGINT PRIMARY KEY, content TEXT)")
+    tied_rows = []
+    for doc_id in range(1, 601):
+        key = doc_id if doc_id % 2 else -doc_id
+        text = ("alpha alpha beta", "beta gamma", "unrelated")[doc_id % 3]
+        tied_rows.append("(%d,'%s')" % (key, text))
+    sql("INSERT INTO tied_docs VALUES " + ",".join(tied_rows))
+    sql("ALTER TABLE tied_docs ADD FULLTEXT INDEX ft(content) WITH PARSER beng")
+    for direction in ("ASC", "DESC"):
+        query = ("SELECT id,MATCH(content) AGAINST('alpha beta') AS score "
+                 "FROM tied_docs WHERE MATCH(content) AGAINST('alpha beta') "
+                 "ORDER BY score DESC,id " + direction)
+        full_order = sql(query).splitlines()
+        assert len(full_order) == 400
+        for offset, limit in ((0, 1), (0, 20), (7, 20), (195, 20), (0, 257)):
+            actual = sql(query + " LIMIT %d,%d" % (offset, limit)).splitlines()
+            expected = full_order[offset:offset + limit]
+            if actual != expected:
+                if not args.allow_known_baseline_topk_error:
+                    raise AssertionError(("secondary-key Top-K", direction, offset,
+                                          limit, actual, expected))
+                known_errors.append({"table": "tied_docs", "direction": direction,
+                                     "offset": offset, "limit": limit,
+                                     "error": "BMW omitted relevance ties",
+                                     "actual": actual, "expected": expected})
+        results["secondary_key_topk_" + direction] = full_order
     args.output.write_text(json.dumps(results, indent=2, sort_keys=True) + "\n")
     status = "passed"
     if known_errors:
