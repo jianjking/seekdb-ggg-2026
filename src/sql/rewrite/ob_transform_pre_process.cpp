@@ -65,7 +65,8 @@ static bool can_skip_fts_order_for_count(const ObDMLStmt *stmt,
   const ObRawExpr *column_expr = child->get_select_item(0).expr_;
   if (nullptr == view || !view->is_generated_table() || view->ref_query_ != child
       || nullptr == table || !table->is_basic_table()
-      || nullptr == column_expr || !column_expr->is_column_ref_expr()
+      || nullptr == column_expr
+      || (!column_expr->is_column_ref_expr() && !column_expr->is_const_raw_expr())
       || nullptr == count_expr || count_expr->get_expr_type() != T_FUN_COUNT
       || static_cast<const ObAggFunRawExpr *>(count_expr)->get_real_param_count() != 0) {
     return false;
@@ -231,11 +232,24 @@ int ObTransformPreProcess::transform_one_stmt(common::ObIArray<ObParentDMLStmt> 
       }
     }
     if (OB_SUCC(ret)) {
-      if (stmt->get_match_exprs().count() > 0 &&
-          !can_skip_fts_order_for_count(stmt, parent_stmts) &&
-          OB_FAIL(preserve_order_for_fulltext_search(stmt, is_happened))) {
-      } else {
-        trans_happened |= is_happened;
+      if (stmt->get_match_exprs().count() > 0) {
+        if (can_skip_fts_order_for_count(stmt, parent_stmts)) {
+          ObSelectStmt *select_stmt = static_cast<ObSelectStmt *>(stmt);
+          if (!select_stmt->get_select_item(0).expr_->is_const_raw_expr()) {
+            ObConstRawExpr *one_expr = nullptr;
+            if (OB_FAIL(ObRawExprUtils::build_const_int_expr(
+                *ctx_->expr_factory_, ObIntType, 1, one_expr))) {
+            } else {
+              // The parent observes only cardinality; do not fetch an unused
+              // source column after the posting scan has applied its limit.
+              select_stmt->get_select_item(0).expr_ = one_expr;
+              trans_happened = true;
+            }
+          }
+        } else if (OB_FAIL(preserve_order_for_fulltext_search(stmt, is_happened))) {
+        } else {
+          trans_happened |= is_happened;
+        }
       }
     }
     if (OB_SUCC(ret) && OB_FAIL(reset_view_base(stmt))) {

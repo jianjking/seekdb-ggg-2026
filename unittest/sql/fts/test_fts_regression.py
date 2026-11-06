@@ -428,6 +428,18 @@ def main():
         "EXECUTE limited_count USING @q,@skip,@take; "
         "DEALLOCATE PREPARE limited_count")
     assert prepared.splitlines() == ["20", "1", "0"], prepared
+    assert sql(
+        "SELECT COUNT(*) FROM (SELECT NULL FROM many_unique WHERE "
+        "MATCH(content) AGAINST('commonmarker evenmarker') LIMIT 20) t"
+    ) == "20"
+    assert sql(
+        "SELECT COUNT(id),COUNT(DISTINCT id) FROM (SELECT id FROM many_unique WHERE "
+        "MATCH(content) AGAINST('commonmarker evenmarker') LIMIT 20) t"
+    ) == "20\t20"
+    assert sql(
+        "SELECT COUNT(*) FROM (SELECT id FROM many_unique WHERE "
+        "MATCH(content) AGAINST('commonmarker evenmarker') LIMIT 20) t WHERE id<0"
+    ) == "0"
     results["count_over_limit"] = "passed"
     args.output.with_name("count-limit-explain.txt").write_text(sql(
         "EXPLAIN SELECT COUNT(*) FROM (SELECT id FROM many_unique WHERE "
