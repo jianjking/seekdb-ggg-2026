@@ -113,6 +113,41 @@ def main():
         results["frequencies_" + str(len(results))] = counts
 
     sql("CREATE TABLE docs(id INT PRIMARY KEY, content TEXT)")
+    # Exercise the shared decoder through ordinary secondary indexes too.
+    # Binary, hex-packed and nullable columns must preserve every input byte.
+    for hex_values in (False, True):
+        for nullable in (False, True):
+            table = "encoded16_%d_%d" % (hex_values, nullable)
+            values = {}
+            for row_id in range(1, 1025):
+                if nullable and row_id % 7 == 0:
+                    values[row_id] = None
+                elif hex_values:
+                    values[row_id] = ("ABCDABCDABCD%04X" % row_id).encode("ascii")
+                else:
+                    value = bytearray(range(128, 144))
+                    for offset in (0, 1, 4, 6, 8, 10):
+                        value[offset] = (row_id * (offset + 3) + row_id // 251) % 256
+                    values[row_id] = bytes(value)
+            sql("CREATE TABLE %s(id INT PRIMARY KEY, value VARBINARY(16))" % table)
+            for start in range(1, 1025, 128):
+                rows = []
+                for row_id in range(start, start + 128):
+                    value = values[row_id]
+                    literal = "NULL" if value is None else "X'%s'" % value.hex()
+                    rows.append("(%d,%s)" % (row_id, literal))
+                sql("INSERT INTO %s VALUES %s" % (table, ",".join(rows)))
+            sql("CREATE INDEX by_value ON %s(value)" % table)
+            for changed in (False, True):
+                if changed:
+                    sql("UPDATE %s SET value=X'00112233445566778899AABBCCDDEEFF' WHERE id=128" % table)
+                    values[128] = bytes.fromhex("00112233445566778899AABBCCDDEEFF")
+                actual = sql("SELECT id,IF(value IS NULL,'NULL',HEX(value)) FROM %s "
+                             "FORCE INDEX(by_value) ORDER BY id" % table)
+                expected = "\n".join("%d\t%s" % (row_id, "NULL" if value is None else value.hex().upper())
+                                     for row_id, value in values.items())
+                assert actual == expected, (table, changed)
+            results[table] = "all 1024 values and indexed update passed"
     documents = [
         (1, "alpha alpha alpha beta"), (2, "alpha beta beta beta"),
         (3, "gamma delta"), (4, ""), (5, "the and or"),

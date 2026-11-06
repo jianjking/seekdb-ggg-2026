@@ -162,9 +162,42 @@ int ObStringDiffDecoder::batch_decode(
     const static uint16_t min_buf_size = 128;
     const int64_t buf_size = std::max(string_size, min_buf_size);
     char *buf = nullptr;
+    uint8_t diff_offsets[16];
+    int64_t diff_count = 0;
+    bool short_diff = string_size == 16 && ctx.is_fix_length()
+        && !ctx.has_extend_value() && !header_->is_hex_packing();
+    if (short_diff) {
+      int64_t offset = 0;
+      for (int64_t i = 0; i < header_->diff_desc_cnt_; ++i) {
+        const ObStringDiffHeader::DiffDesc &desc = header_->diff_descs_[i];
+        if (desc.diff_) {
+          for (int64_t j = 0; j < desc.count_; ++j) {
+            diff_offsets[diff_count++] = offset + j;
+          }
+        }
+        offset += desc.count_;
+      }
+      short_diff = diff_count <= 8;
+    }
     if (OB_FAIL(ret)) {
     } else if (OB_ISNULL(buf = static_cast<char *>(ctx.allocator_->alloc(buf_size * row_cap)))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
+    } else if (short_diff) {
+      // Expand the shared bytes once, rather than interpreting all runs per row.
+      char common_string[16] = {};
+      header_->copy_string(ObStringDiffHeader::LeftToRight(), std::logical_not<uint8_t>(),
+          header_->common_data(), common_string);
+      for (int64_t i = 0; i < row_cap; ++i) {
+        char *str_ptr = buf + i * buf_size;
+        const unsigned char *cell_data = col_data + row_ids[i] * header_->length_;
+        MEMCPY(str_ptr, common_string, sizeof(common_string));
+        for (int64_t j = 0; j < diff_count; ++j) {
+          str_ptr[diff_offsets[j]] = cell_data[j];
+        }
+        datums[i].pack_ = string_size;
+        datums[i].ptr_ = str_ptr;
+      }
+      return OB_SUCCESS;
     } else {
       for (int64_t i = 0; i < row_cap; ++i) {
         header_->copy_string(ObStringDiffHeader::LeftToRight(), std::logical_not<uint8_t>(),
