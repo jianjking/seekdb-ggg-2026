@@ -226,6 +226,9 @@ def main():
                   for word, count in token.items()}
         assert counts == {"alpha": 3, "beta": 2, "gamma": 1}
         assert ranking() == ranks
+        assert sql(
+            "SELECT COUNT(*) FROM (SELECT id FROM docs WHERE "
+            "MATCH(content) AGAINST('alpha') LIMIT 1,2) t") == "2"
 
     with ThreadPoolExecutor(max_workers=4) as workers:
         list(workers.map(concurrent_check, range(32)))
@@ -242,6 +245,11 @@ def main():
     assert matched("secondmarker") == ""
     sql("START TRANSACTION; INSERT INTO docs VALUES (15,'rollbackmarker'); ROLLBACK")
     assert matched("rollbackmarker") == ""
+    for marker, expected in (("replacementmarker", "1"), ("secondmarker", "0"),
+                             ("rollbackmarker", "0")):
+        assert sql(
+            "SELECT COUNT(*) FROM (SELECT id FROM docs WHERE "
+            "MATCH(content) AGAINST('%s') LIMIT 20) t" % marker) == expected
     query = "alpha beta zeta"
     selected = "SELECT id, MATCH(content) AGAINST('%s') AS score FROM docs " % query
     merged = sql(selected + "WHERE MATCH(content) AGAINST('%s') ORDER BY id" % query)
@@ -398,6 +406,32 @@ def main():
                 "MATCH(content) AGAINST('commonmarker evenmarker')"
             ) == "257"
             results["cardinality_only_batch_stream"] = "passed"
+    for terms, total in (("commonmarker evenmarker", 5000),
+                         ("evenmarker absentmarker", 2500),
+                         ("absentmarker secondabsent", 0)):
+        for offset, limit in ((0, 0), (0, 1), (0, 20), (7, 257),
+                              (2499, 20), (6000, 20)):
+            actual = int(sql(
+                "SELECT COUNT(*) FROM (SELECT id FROM many_unique WHERE "
+                "MATCH(content) AGAINST('%s') LIMIT %d,%d) t"
+                % (terms, offset, limit)))
+            assert actual == min(limit, max(0, total - offset)), (
+                terms, offset, limit, actual, total)
+    prepared = sql(
+        "PREPARE limited_count FROM 'SELECT COUNT(*) FROM (SELECT id FROM "
+        "many_unique WHERE MATCH(content) AGAINST(?) LIMIT ?,?) t'; "
+        "SET @q='commonmarker evenmarker', @skip=7, @take=20; "
+        "EXECUTE limited_count USING @q,@skip,@take; "
+        "SET @q='evenmarker absentmarker', @skip=2499; "
+        "EXECUTE limited_count USING @q,@skip,@take; "
+        "SET @q='absentmarker secondabsent', @skip=0; "
+        "EXECUTE limited_count USING @q,@skip,@take; "
+        "DEALLOCATE PREPARE limited_count")
+    assert prepared.splitlines() == ["20", "1", "0"], prepared
+    results["count_over_limit"] = "passed"
+    args.output.with_name("count-limit-explain.txt").write_text(sql(
+        "EXPLAIN SELECT COUNT(*) FROM (SELECT id FROM many_unique WHERE "
+        "MATCH(content) AGAINST('commonmarker evenmarker') LIMIT 20) t") + "\n")
     # A secondary key requires every row tied at the relevance cutoff.
     # Negative primary keys also prevent physical DocID order from masking it.
     sql("CREATE TABLE tied_docs(id BIGINT PRIMARY KEY, content TEXT)")

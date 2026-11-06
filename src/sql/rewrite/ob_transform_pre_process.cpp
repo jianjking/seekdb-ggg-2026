@@ -32,6 +32,59 @@ namespace oceanbase
 using namespace common;
 namespace sql
 {
+static bool can_skip_fts_order_for_count(const ObDMLStmt *stmt,
+                                       const ObIArray<ObParentDMLStmt> &parent_stmts)
+{
+  if (nullptr == stmt || !stmt->is_select_stmt() || parent_stmts.count() != 1
+      || nullptr == parent_stmts.at(0).stmt_
+      || !parent_stmts.at(0).stmt_->is_select_stmt()) {
+    return false;
+  }
+  const ObSelectStmt *child = static_cast<const ObSelectStmt *>(stmt);
+  const ObSelectStmt *parent =
+      static_cast<const ObSelectStmt *>(parent_stmts.at(0).stmt_);
+  if (!child->is_single_table_stmt() || child->is_set_stmt()
+      || child->get_select_item_size() != 1 || child->has_group_by()
+      || child->has_having() || child->has_distinct() || child->has_window_function()
+      || child->has_order_by() || child->has_for_update() || child->is_calc_found_rows()
+      || nullptr == child->get_limit_expr() || nullptr != child->get_limit_percent_expr()
+      || child->is_fetch_with_ties() || child->get_subquery_expr_size() != 0
+      || child->get_condition_exprs().count() != 1
+      || !parent->is_single_table_stmt() || parent->is_set_stmt()
+      || !parent->is_scala_group_by() || parent->get_aggr_item_size() != 1
+      || parent->get_select_item_size() != 1 || parent->has_having()
+      || parent->has_distinct() || parent->has_window_function()
+      || parent->has_order_by() || parent->has_limit() || parent->has_for_update()
+      || parent->is_calc_found_rows() || !parent->get_condition_exprs().empty()
+      || parent->get_subquery_expr_size() != 0) {
+    return false;
+  }
+  const TableItem *view = parent->get_table_item(0);
+  const TableItem *table = child->get_table_item(0);
+  const ObRawExpr *count_expr = parent->get_select_item(0).expr_;
+  const ObRawExpr *column_expr = child->get_select_item(0).expr_;
+  if (nullptr == view || !view->is_generated_table() || view->ref_query_ != child
+      || nullptr == table || !table->is_basic_table()
+      || nullptr == column_expr || !column_expr->is_column_ref_expr()
+      || nullptr == count_expr || count_expr->get_expr_type() != T_FUN_COUNT
+      || static_cast<const ObAggFunRawExpr *>(count_expr)->get_real_param_count() != 0) {
+    return false;
+  }
+  const ObRawExpr *filter = child->get_condition_exprs().at(0);
+  if (nullptr != filter && filter->get_expr_type() == T_OP_BOOL
+      && filter->get_param_count() == 1) {
+    filter = filter->get_param_expr(0);
+  }
+  if (nullptr == filter || !filter->has_flag(IS_MATCH_EXPR)) {
+    return false;
+  }
+  const ObMatchFunRawExpr *match_expr = static_cast<const ObMatchFunRawExpr *>(filter);
+  // Only the limited row count is observed. Keep explicit order, ties, locking,
+  // projected values and other aggregates on the existing ranked path.
+  return !match_expr->is_es_match()
+      && match_expr->get_mode_flag() == NATURAL_LANGUAGE_MODE;
+}
+
 int ObTransformPreProcess::transform_one_stmt(common::ObIArray<ObParentDMLStmt> &parent_stmts,
                                               ObDMLStmt *&stmt,
                                               bool &trans_happened)
@@ -179,6 +232,7 @@ int ObTransformPreProcess::transform_one_stmt(common::ObIArray<ObParentDMLStmt> 
     }
     if (OB_SUCC(ret)) {
       if (stmt->get_match_exprs().count() > 0 &&
+          !can_skip_fts_order_for_count(stmt, parent_stmts) &&
           OB_FAIL(preserve_order_for_fulltext_search(stmt, is_happened))) {
       } else {
         trans_happened |= is_happened;
