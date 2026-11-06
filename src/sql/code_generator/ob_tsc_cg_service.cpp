@@ -29,6 +29,34 @@ using namespace share::schema;
 namespace sql
 {
 
+static bool is_text_ir_count_witness(const ObLogTableScan &op,
+                                     const ObTextRetrievalInfo &tr_info)
+{
+  const ObDMLStmt *stmt = op.get_plan()->get_stmt();
+  const ObSelectStmt *select_stmt =
+      stmt->is_select_stmt() ? static_cast<const ObSelectStmt *>(stmt) : nullptr;
+  const ObMatchFunRawExpr *match_against = tr_info.match_expr_;
+  return op.is_text_retrieval_scan() && !op.use_index_merge() && !op.has_es_match()
+      && &tr_info == &op.get_text_retrieval_info()
+      && match_against != nullptr && tr_info.pushdown_match_filter_ != nullptr
+      && select_stmt != nullptr && stmt->is_single_table_stmt()
+      && select_stmt->get_select_item_size() == 1
+      && select_stmt->get_select_item(0).expr_->get_expr_type() == T_FUN_COUNT
+      && static_cast<const ObAggFunRawExpr *>(select_stmt->get_select_item(0).expr_)
+          ->get_real_param_count() == 0
+      && stmt->get_condition_exprs().count() == 1
+      && stmt->get_condition_exprs().at(0) == tr_info.pushdown_match_filter_
+      && tr_info.pushdown_match_filter_->get_expr_type() == T_OP_BOOL
+      && tr_info.pushdown_match_filter_->get_param_count() == 1
+      && tr_info.pushdown_match_filter_->get_param_expr(0) == match_against
+      && match_against->get_mode_flag() == NATURAL_LANGUAGE_MODE
+      && match_against->get_columns_boosts().empty()
+      && match_against->get_param_text_expr() == nullptr
+      && select_stmt->is_scala_group_by() && !select_stmt->has_having()
+      && !select_stmt->has_order_by() && !stmt->has_limit()
+      && stmt->get_subquery_expr_size() == 0 && !tr_info.need_sort();
+}
+
 int ObTscCgService::generate_tsc_ctdef(ObLogTableScan &op, ObTableScanCtDef &tsc_ctdef)
 {
   int ret = OB_SUCCESS;
@@ -1894,35 +1922,20 @@ int ObTscCgService::generate_text_ir_ctdef(const ObLogTableScan &op,
 
   if (OB_SUCC(ret)) {
     root_ctdef = ir_scan_ctdef;
+    ir_scan_ctdef->cardinality_only_ =
+        is_text_ir_count_witness(op, tr_info)
+        && op.get_output_exprs().empty() && !op.get_index_back()
+        && !cg_ctx.is_func_lookup_ && !cg_ctx.is_vec_iter_func_lookup_
+        && !cg_ctx.is_es_match_ && !cg_ctx.is_merge_fts_index_;
     if (OB_FAIL(generate_text_ir_spec_exprs(tr_info, *ir_scan_ctdef))) {
     } else {
-      const ObDMLStmt *stmt = op.get_plan()->get_stmt();
-      const ObSelectStmt *select_stmt =
-          stmt->is_select_stmt() ? static_cast<const ObSelectStmt *>(stmt) : nullptr;
-      if (select_stmt != nullptr && stmt->is_single_table_stmt()
-          && select_stmt->get_select_item_size() == 1
-          && select_stmt->get_select_item(0).expr_->get_expr_type() == T_FUN_COUNT
-          && static_cast<const ObAggFunRawExpr *>(select_stmt->get_select_item(0).expr_)
-              ->get_real_param_count() == 0
-          && stmt->get_condition_exprs().count() == 1
-          && stmt->get_condition_exprs().at(0) == tr_info.pushdown_match_filter_
-          && tr_info.pushdown_match_filter_->get_expr_type() == T_OP_BOOL
-          && tr_info.pushdown_match_filter_->get_param_count() == 1
-          && tr_info.pushdown_match_filter_->get_param_expr(0) == match_against
-          && match_against->get_mode_flag() == NATURAL_LANGUAGE_MODE
-          && match_against->get_columns_boosts().empty()
-          && match_against->get_param_text_expr() == nullptr
-          && select_stmt->is_scala_group_by() && !select_stmt->has_having()
-          && !select_stmt->has_order_by() && !stmt->has_limit()
-          && stmt->get_subquery_expr_size() == 0 && !tr_info.need_sort()
+      if (is_text_ir_count_witness(op, tr_info)
           && !cg_ctx.is_func_lookup_ && !cg_ctx.is_vec_iter_func_lookup_
           && !cg_ctx.is_es_match_ && !cg_ctx.is_merge_fts_index_) {
         // A positive witness suffices for this sole Boolean consumer. Keep the
         // projected slot and statistics definitions used by the existing DAAT.
         ir_scan_ctdef->relevance_expr_ = nullptr;
         ir_scan_ctdef->match_filter_ = nullptr;
-        ir_scan_ctdef->cardinality_only_ =
-            op.get_output_exprs().empty() && !op.get_index_back();
       }
       const ObCostTableScanInfo *est_cost_info = op.get_est_cost_info();
       int partition_row_cnt = 0;
@@ -2356,7 +2369,13 @@ int ObTscCgService::extract_text_ir_access_columns(
   } else {
     switch (scan_ctdef.ir_scan_type_) {
     case ObTSCIRScanType::OB_IR_INV_IDX_SCAN:
-      if (OB_FAIL(add_var_to_array_no_dup(access_exprs, static_cast<ObRawExpr*>(tr_info.token_cnt_column_)))) {
+      if (is_text_ir_count_witness(op, tr_info)
+          && op.get_output_exprs().empty() && !op.get_index_back()) {
+        // Only DocID participates in an unfiltered cardinality union.
+        if (OB_FAIL(add_var_to_array_no_dup(access_exprs,
+                    static_cast<ObRawExpr*>(tr_info.docid_or_rowkey_column_)))) {
+        }
+      } else if (OB_FAIL(add_var_to_array_no_dup(access_exprs, static_cast<ObRawExpr*>(tr_info.token_cnt_column_)))) {
       } else if (OB_FAIL(add_var_to_array_no_dup(access_exprs, static_cast<ObRawExpr*>(tr_info.docid_or_rowkey_column_)))) {
       } else if (OB_FAIL(add_var_to_array_no_dup(access_exprs, static_cast<ObRawExpr*>(tr_info.doc_length_column_)))) {
       }
@@ -2715,7 +2734,12 @@ int ObTscCgService::extract_text_ir_das_output_column_ids(
 {
   int ret = OB_SUCCESS;
   if (ObTSCIRScanType::OB_IR_INV_IDX_SCAN == scan_ctdef.ir_scan_type_) {
-    if (OB_FAIL(output_cids.push_back(
+    const uint64_t doc_id_col = tr_info.docid_or_rowkey_column_->get_column_id();
+    if (scan_ctdef.access_column_ids_.count() == 1
+        && scan_ctdef.access_column_ids_.at(0) == doc_id_col) {
+      if (OB_FAIL(output_cids.push_back(doc_id_col))) {
+      }
+    } else if (OB_FAIL(output_cids.push_back(
         static_cast<ObColumnRefRawExpr *>(tr_info.token_cnt_column_)->get_column_id()))) {
     } else if (OB_FAIL(output_cids.push_back(
         static_cast<ObColumnRefRawExpr *>(tr_info.docid_or_rowkey_column_)->get_column_id()))) {
@@ -3047,13 +3071,16 @@ int ObTscCgService::generate_text_ir_spec_exprs(const ObTextRetrievalInfo &tr_in
         doc_length_col_idx = i;
       }
     }
-    if (OB_UNLIKELY(-1 == doc_id_col_idx || -1 == doc_length_col_idx)) {
+    if (OB_UNLIKELY(-1 == doc_id_col_idx
+        || (!text_ir_scan_ctdef.cardinality_only_ && -1 == doc_length_col_idx))) {
       ret = OB_ERR_UNEXPECTED;
     } else {
       text_ir_scan_ctdef.inv_scan_domain_id_col_ =
           text_ir_scan_ctdef.get_inv_idx_scan_ctdef()->pd_expr_spec_.access_exprs_.at(doc_id_col_idx);
-      text_ir_scan_ctdef.inv_scan_doc_length_col_ =
-          text_ir_scan_ctdef.get_inv_idx_scan_ctdef()->pd_expr_spec_.access_exprs_.at(doc_length_col_idx);
+      if (doc_length_col_idx >= 0) {
+        text_ir_scan_ctdef.inv_scan_doc_length_col_ =
+            text_ir_scan_ctdef.get_inv_idx_scan_ctdef()->pd_expr_spec_.access_exprs_.at(doc_length_col_idx);
+      }
       if (OB_FAIL(result_output.push_back(text_ir_scan_ctdef.inv_scan_domain_id_col_))) {
       }
     }
@@ -3068,12 +3095,13 @@ int ObTscCgService::generate_text_ir_spec_exprs(const ObTextRetrievalInfo &tr_in
     }
   }
 
-  if (OB_SUCC(ret) && nullptr != tr_info.pushdown_match_filter_) {
+  if (OB_SUCC(ret) && !text_ir_scan_ctdef.cardinality_only_
+      && nullptr != tr_info.pushdown_match_filter_) {
     if (OB_FAIL(cg_.generate_rt_expr(*tr_info.pushdown_match_filter_, text_ir_scan_ctdef.match_filter_))) {
     }
   }
 
-  if (OB_SUCC(ret) && tr_info.need_calc_relevance_) {
+  if (OB_SUCC(ret) && tr_info.need_calc_relevance_ && !text_ir_scan_ctdef.cardinality_only_) {
     if (OB_ISNULL(tr_info.relevance_expr_)) {
       ret = OB_ERR_UNEXPECTED;
     } else if (OB_FAIL(cg_.generate_rt_expr(*tr_info.relevance_expr_, text_ir_scan_ctdef.relevance_expr_))) {

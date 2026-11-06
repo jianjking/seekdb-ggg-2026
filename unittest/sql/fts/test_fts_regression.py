@@ -264,6 +264,8 @@ def main():
         assert sql(
             "SELECT COUNT(*) FROM (SELECT id FROM docs WHERE "
             "MATCH(content) AGAINST('alpha') LIMIT 1,2) t") == "2"
+        assert sql("SELECT COUNT(*) FROM docs WHERE "
+                   "MATCH(content) AGAINST('alpha beta')") == "5"
 
     with ThreadPoolExecutor(max_workers=4) as workers:
         list(workers.map(concurrent_check, range(32)))
@@ -280,6 +282,17 @@ def main():
     assert matched("secondmarker") == ""
     sql("START TRANSACTION; INSERT INTO docs VALUES (15,'rollbackmarker'); ROLLBACK")
     assert matched("rollbackmarker") == ""
+    transactional_counts = sql(
+        "START TRANSACTION; INSERT INTO docs VALUES (15,'counttxnmarker alpha'); "
+        "SELECT COUNT(*) FROM docs WHERE MATCH(content) AGAINST('counttxnmarker'); "
+        "UPDATE docs SET content='counttxnreplacement beta' WHERE id=15; "
+        "SELECT COUNT(*) FROM docs WHERE MATCH(content) AGAINST('counttxnmarker'); "
+        "SELECT COUNT(*) FROM docs WHERE MATCH(content) AGAINST('counttxnreplacement'); "
+        "DELETE FROM docs WHERE id=15; "
+        "SELECT COUNT(*) FROM docs WHERE MATCH(content) AGAINST('counttxnreplacement'); "
+        "ROLLBACK; SELECT COUNT(*) FROM docs WHERE MATCH(content) AGAINST('counttxnreplacement')")
+    assert transactional_counts.splitlines() == ["1", "0", "1", "0", "0"], transactional_counts
+    results["count_transaction_read_your_writes"] = "passed"
     for marker, expected in (("replacementmarker", "1"), ("secondmarker", "0"),
                              ("rollbackmarker", "0")):
         assert sql(
@@ -440,6 +453,13 @@ def main():
                 "SELECT COUNT(*) FROM many_unique WHERE id<=257 AND "
                 "MATCH(content) AGAINST('commonmarker evenmarker')"
             ) == "257"
+            assert sql(
+                "SELECT COUNT(content) FROM many_unique WHERE "
+                "MATCH(content) AGAINST('commonmarker evenmarker')"
+            ) == "5000"
+            args.output.with_name("count-projection-explain.txt").write_text(sql(
+                "EXPLAIN SELECT COUNT(*) FROM many_unique WHERE "
+                "MATCH(content) AGAINST('commonmarker evenmarker')") + "\n")
             results["cardinality_only_batch_stream"] = "passed"
     def limited_count_sql(statement):
         try:
