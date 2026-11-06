@@ -22,6 +22,23 @@ namespace oceanbase
 {
 namespace storage
 {
+namespace
+{
+inline int compare_batch_doc_id(const ObDatum &lhs, const ObDatum &rhs,
+                               const ObDomainIdCmp &id_cmp, const bool binary_id, int &cmp)
+{
+  int ret = OB_SUCCESS;
+  if (binary_id && !lhs.is_null() && !rhs.is_null() && !lhs.is_ext() && !rhs.is_ext()
+      && lhs.len_ == 16 && rhs.len_ == 16) {
+    // Keep the fixed-width binary comparison inside the batch merge loop.
+    cmp = MEMCMP(lhs.ptr_, rhs.ptr_, 16);
+  } else {
+    ret = id_cmp.compare(lhs, rhs, cmp);
+  }
+  return ret;
+}
+}
+
 int ObTextDaaTIter::init(const ObTextDaaTParam &param)
 {
   int ret = OB_SUCCESS;
@@ -112,6 +129,9 @@ int ObTextDaaTIter::pre_process()
 int ObTextDaaTIter::fill_merge_window()
 {
   int ret = OB_SUCCESS;
+  const ObObjMeta &id_meta = iter_param_->id_proj_expr_->obj_meta_;
+  const bool binary_id = id_meta.get_type() == ObVarcharType
+      && id_meta.get_collation_type() == CS_TYPE_BINARY;
   const ObDocIdExt *ids[MAX_BATCH_MERGE_DIMS] = {};
   const double *scores[MAX_BATCH_MERGE_DIMS] = {};
   int64_t counts[MAX_BATCH_MERGE_DIMS] = {};
@@ -127,8 +147,9 @@ int ObTextDaaTIter::fill_merge_window()
       }
     } else if (watermark == nullptr) {
       watermark = ids[dim] + counts[dim] - 1;
-    } else if (OB_FAIL(batch_id_cmp_.compare(
-        ids[dim][counts[dim] - 1].get_datum(), watermark->get_datum(), cmp))) {
+    } else if (OB_FAIL(compare_batch_doc_id(
+        ids[dim][counts[dim] - 1].get_datum(), watermark->get_datum(),
+        batch_id_cmp_, binary_id, cmp))) {
     } else if (cmp < 0) {
       watermark = ids[dim] + counts[dim] - 1;
     }
@@ -144,8 +165,9 @@ int ObTextDaaTIter::fill_merge_window()
     for (int64_t dim = 0; OB_SUCC(ret) && dim < dim_iters_->count(); ++dim) {
       int64_t prefix = 0;
       while (OB_SUCC(ret) && prefix < counts[dim]) {
-        if (OB_FAIL(batch_id_cmp_.compare(
-            ids[dim][prefix].get_datum(), watermark->get_datum(), cmp))) {
+        if (OB_FAIL(compare_batch_doc_id(
+            ids[dim][prefix].get_datum(), watermark->get_datum(),
+            batch_id_cmp_, binary_id, cmp))) {
         } else if (cmp > 0) {
           break;
         } else {
@@ -163,8 +185,9 @@ int ObTextDaaTIter::fill_merge_window()
           cmp = 1;
         } else if (j == prefix) {
           cmp = -1;
-        } else if (OB_FAIL(batch_id_cmp_.compare(
-            input[i].id_->get_datum(), ids[dim][j].get_datum(), cmp))) {
+        } else if (OB_FAIL(compare_batch_doc_id(
+            input[i].id_->get_datum(), ids[dim][j].get_datum(),
+            batch_id_cmp_, binary_id, cmp))) {
         }
         if (OB_SUCC(ret)) {
           if (cmp < 0) {

@@ -458,6 +458,29 @@ def main():
     # All baseline exceptions are retained in known-topk-errors.json.
     results["count_over_limit"] = {"prepared_expected": ["20", "1", "0"],
                                    "parameter_cases": 18}
+    id_oracles = []
+    for table, primary_key in (("binary_docids", "PRIMARY KEY"), ("integer_docids", "")):
+        sql("CREATE TABLE %s(id VARCHAR(80) %s, content TEXT)" % (table, primary_key))
+        sql("INSERT INTO %s VALUES "
+            "('row-256','alpha alpha beta'),('row-1','beta gamma'),"
+            "('row-65536','alpha gamma'),('row-2','unrelated')" % table)
+        sql("ALTER TABLE %s ADD FULLTEXT INDEX ft(content) WITH PARSER beng" % table)
+        output = sql(
+            "SELECT id,MATCH(content) AGAINST('alpha beta') AS score FROM %s "
+            "WHERE MATCH(content) AGAINST('alpha beta') ORDER BY id" % table)
+        assert [line.split("\t")[0] for line in output.splitlines()] == [
+            "row-1", "row-256", "row-65536"]
+        assert sql("SELECT COUNT(*) FROM %s WHERE "
+                   "MATCH(content) AGAINST('alpha beta')" % table) == "3"
+        id_oracles.append(output)
+        sql("INSERT INTO %s VALUES ('row-new','alpha beta')" % table)
+        assert sql("SELECT COUNT(*) FROM %s WHERE "
+                   "MATCH(content) AGAINST('alpha beta')" % table) == "4"
+        sql("DELETE FROM %s WHERE id='row-256'" % table)
+        assert sql("SELECT COUNT(*) FROM %s WHERE "
+                   "MATCH(content) AGAINST('alpha beta')" % table) == "3"
+    assert id_oracles[0] == id_oracles[1], id_oracles
+    results["binary_and_integer_docid_union"] = id_oracles[0]
     args.output.with_name("count-limit-explain.txt").write_text(sql(
         "EXPLAIN SELECT COUNT(*) FROM (SELECT id FROM many_unique WHERE "
         "MATCH(content) AGAINST('commonmarker evenmarker') LIMIT 20) t") + "\n")
