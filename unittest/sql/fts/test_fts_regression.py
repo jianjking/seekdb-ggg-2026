@@ -76,6 +76,22 @@ def main():
     assert [row["doc_len"] for row in config_rows] == [3, 2, 0, 0]
     assert config_rows[1]["tokens"] == [{"gamma": 2}]
     results["tokenize_dynamic_and_prepared"] = "passed"
+    for parser_name, text, properties in [
+        ("space", "a alpha beta longword", '[{"min_token_size":3},{"max_token_size":84}]'),
+        ("beng", "a alpha beta ALPHA", '[{"min_token_size":3},{"max_token_size":84}]'),
+        ("ngram", "abcdef", '[{"ngram_token_size":2}]'),
+        ("ngram2", "abcdef", '[{"min_ngram_size":2},{"max_ngram_size":3}]'),
+        ("ik", "全文索引 分词器 数据库 OceanBase", '[{"ik_mode":"smart"}]'),
+    ]:
+        default_detail = json.loads(sql(
+            "SELECT tokenize('%s','%s','[{\"output\":\"all\"}]')" % (text, parser_name)))
+        explicit_detail = json.loads(sql(
+            "SELECT tokenize('%s','%s','[{\"output\":\"all\"},{\"additional_args\":%s}]')"
+            % (text, parser_name, properties)))
+        assert default_detail == explicit_detail, (parser_name, default_detail, explicit_detail)
+        assert sorted(json.loads(sql("SELECT tokenize('%s','%s')" % (text, parser_name)))) == sorted(
+            word for item in default_detail["tokens"] for word in item), parser_name
+    results["implicit_and_explicit_parser_defaults"] = "passed"
     for parser_name, text, options, expected in [
         ("space", "hello world", "[]", ["hello", "world"]),
         ("ngram", "abcd", "[]", ["ab", "bc", "cd"]),
