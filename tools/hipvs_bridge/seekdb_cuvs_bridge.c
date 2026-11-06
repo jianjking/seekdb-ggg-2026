@@ -31,30 +31,46 @@ static int env_int(const char* name, int def)
   return (int)x;
 }
 
+static int env_flag(const char* name, int def)
+{
+  const char* v = getenv(name);
+  if (v == NULL || v[0] == '\0') return def;
+  return strcmp(v, "0") == 0 ? 0 : 1;
+}
+
 /* Bit-level fp32 <-> IEEE-754 binary16 conversion.  Keeping the conversion in
  * plain integer code avoids relying on host-side `__float2half` support in
- * hipcc/cuda and lets the bridge pass raw half bits to cuVS. */
+ * hipcc/cuda and lets the bridge pass raw half bits to cuVS.  Rounding is
+ * round-to-nearest-even, matching the hardware conversion. */
 static uint16_t f32_to_f16_bits(float value)
 {
   uint32_t x = 0;
   memcpy(&x, &value, sizeof(x));
   const uint32_t sign = (x >> 16) & 0x8000u;
-  const int32_t exp = (int32_t)((x >> 23) & 0xffu) - 127 + 15;
+  const uint32_t raw_exp = (x >> 23) & 0xffu;
   uint32_t mant = x & 0x7fffffu;
+  if (raw_exp == 0xffu) {
+    return (uint16_t)(sign | 0x7c00u | (mant != 0 ? 0x200u : 0u));
+  }
+  int32_t exp = (int32_t)raw_exp - 127 + 15;
+  if (exp >= 31) {
+    return (uint16_t)(sign | 0x7c00u);
+  }
   if (exp <= 0) {
     if (exp < -10) return (uint16_t)sign;
     mant |= 0x800000u;
     const uint32_t shift = (uint32_t)(14 - exp);
-    return (uint16_t)(sign | (mant >> shift));
+    uint32_t half = mant >> shift;
+    const uint32_t remainder = mant & ((1u << shift) - 1u);
+    const uint32_t halfway = 1u << (shift - 1u);
+    if (remainder > halfway || (remainder == halfway && (half & 1u) != 0)) ++half;
+    return (uint16_t)(sign | half);
   }
-  if (exp >= 31) {
-    return (uint16_t)(sign | 0x7c00u | (mant != 0 ? 0x200u : 0u));
-  }
-  mant += 0x1000u; /* round to nearest */
+  mant += 0x0fffu + ((mant >> 13) & 1u);
   if (mant & 0x800000u) {
     mant = 0;
-    if (exp + 1 >= 31) return (uint16_t)(sign | 0x7c00u);
-    return (uint16_t)(sign | ((uint32_t)(exp + 1) << 10));
+    ++exp;
+    if (exp >= 31) return (uint16_t)(sign | 0x7c00u);
   }
   return (uint16_t)(sign | ((uint32_t)exp << 10) | (mant >> 13));
 }
@@ -107,7 +123,7 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   }
   fill_build_params(h->ip);
 
-  const int allow_fp16 = env_int("SEEKDB_CUVS_FP16", 1) != 0;
+  const int allow_fp16 = env_flag("SEEKDB_CUVS_FP16", 1) != 0;
   uint16_t* half_base = NULL;
   for (int attempt = 0; attempt < 2; ++attempt) {
     const int use_fp16 = allow_fp16 && attempt == 0;
