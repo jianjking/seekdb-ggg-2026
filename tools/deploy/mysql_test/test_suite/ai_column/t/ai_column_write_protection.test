@@ -72,11 +72,24 @@ insert into docs(id, content) select 2, 'allowed';
 insert into docs set id=3, content='allowed';
 insert into docs() values();
 update docs set content='changed' where id=2;
+prepare ai_write_stmt from 'update docs set content=? where id=2';
+set @ai_write_value = 'prepared-one';
+execute ai_write_stmt using @ai_write_value;
+deallocate prepare ai_write_stmt;
+prepare ai_write_stmt from 'update docs set content=? where id=?';
+set @ai_write_value = 'prepared-two', @ai_write_id = 2;
+execute ai_write_stmt using @ai_write_value, @ai_write_id;
+deallocate prepare ai_write_stmt;
+let $ok = `select content = 'prepared-two' from docs where id=2`;
+if (!$ok)
+{
+  --die Prepared business UPDATE was treated as RETRY
+}
 create table ordinary(id bigint primary key, result json, emb vector(4));
 insert into ordinary values(1, '{}', [1,2,3,4]);
 update ordinary set result='{"ok":true}', emb=[4,3,2,1] where id=1;
 let $ok = `select count(*) = 1 from ordinary
-  where json_extract(result, '$.ok') = true and emb = [4,3,2,1]`;
+  where json_extract(result, concat(char(36), '.ok')) = true and emb = [4,3,2,1]`;
 if (!$ok)
 {
   --die Ordinary JSON or VECTOR writes were rejected

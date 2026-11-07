@@ -346,6 +346,8 @@ TEST(AIColumnSchema, dependencies_survive_blob_reload_and_column_id_reallocation
   input.set_table_id(50001);
   input.set_column_id(117);
   input.set_data_type(ObVarcharType);
+  input.set_collation_type(CS_TYPE_UTF8MB4_GENERAL_CI);
+  input.set_data_length(128);
   ASSERT_EQ(OB_SUCCESS, input.set_column_name("content"));
   ASSERT_EQ(OB_SUCCESS, table.add_column(input));
   ObSEArray<uint64_t, 4> ids;

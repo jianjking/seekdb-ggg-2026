@@ -524,7 +524,8 @@ int ObOptimizer::check_pdml_supported_feature(const ObDelUpdStmt &pdml_stmt,
   // Sequentially check the disabled unstable functions, if there are disabled unstable functions is open = false
   if (OB_ISNULL(schema_guard)) {
     ret = OB_ERR_UNEXPECTED;
-  } else if (OB_FAIL(check_ai_column_serial_dml(pdml_stmt, schema_guard, is_use_pdml))) {
+  } else if (!session.get_ddl_info().is_ddl()
+             && OB_FAIL(check_ai_column_serial_dml(pdml_stmt, schema_guard, is_use_pdml))) {
   } else if (!is_use_pdml) {
     // Task creation runs in the coordinator's business transaction.
   } else if (pdml_stmt.is_ignore()) {

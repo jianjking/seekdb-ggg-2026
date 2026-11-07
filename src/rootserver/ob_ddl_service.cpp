@@ -7809,17 +7809,22 @@ int ObDDLService::add_new_column_to_table_schema(
           hidden_column.set_table_id(new_table_schema.get_table_id());
           hidden_column.set_column_id(++max_used_column_id);
           hidden_column_ids[i] = hidden_column.get_column_id();
+          const ObColumnSchemaV2 *mem_hidden_column = NULL;
           if (OB_FAIL(update_prev_id_and_add_column_(origin_table_schema,
                                                      new_table_schema,
                                                      hidden_column,
                                                      ddl_operator,
                                                      trans))) {
             LOG_WARN("failed to add AI hidden column", K(ret), K(i));
-          } else if (update_inner_table
-                     && OB_FAIL(ddl_operator->insert_single_column(*trans,
-                                                                   new_table_schema,
-                                                                   hidden_column))) {
-            LOG_WARN("failed to persist AI hidden column", K(ret), K(i));
+          } else if (OB_ISNULL(mem_hidden_column = new_table_schema.get_column_schema(
+                                  hidden_column.get_column_id()))) {
+            ret = OB_ERR_UNEXPECTED;
+          } else {
+            hidden_column.set_prev_column_id(mem_hidden_column->get_prev_column_id());
+            if (update_inner_table
+                && OB_FAIL(ddl_operator->insert_single_column(*trans, new_table_schema, hidden_column))) {
+              LOG_WARN("failed to persist AI hidden column", K(ret), K(i));
+            }
           }
         }
       }
@@ -12565,9 +12570,12 @@ int ObDDLService::alter_table(obcall::ObAlterTableArg &alter_table_arg,
     const ObTableSchema *new_table_schema = NULL;
     HEAP_VAR(ObSchemaGetterGuard, new_schema_guard) {
       if (OB_FAIL(get_runtime_schema_guard_with_version_in_inner_table(new_schema_guard))) {
+        LOG_WARN("failed to refresh schema for altered table validation", K(ret), K(table_id));
       } else if (OB_FAIL(new_schema_guard.get_table_schema( table_id, new_table_schema))) {
+        LOG_WARN("failed to reload altered table", K(ret), K(table_id));
       } else if (NULL == new_table_schema) {
         ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("altered table schema is missing", K(ret), K(table_id));
       }
     }
 		// check const_column_iterator and ObColumnIterByPrevNextID
@@ -12585,6 +12593,8 @@ int ObDDLService::alter_table(obcall::ObAlterTableArg &alter_table_arg,
       } else if (OB_FAIL(new_table_schema->get_unused_column_ids(unused_column_ids))) {
       } else if (OB_UNLIKELY(column_cnt_in_column_arr != column_cnt_in_prev_next_iter + unused_column_ids.count())) {
         ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("altered column chain is incomplete", K(ret), K(table_id),
+                 K(column_cnt_in_column_arr), K(column_cnt_in_prev_next_iter), K(unused_column_ids));
       }
     }
   }

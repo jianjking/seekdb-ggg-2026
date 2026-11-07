@@ -167,11 +167,13 @@ int ObAllVirtualAIColumn::fill_row(ObNewRow *&row)
         cell.set_collation_type(collation_type);
         break;
       case GENERATION_EXPR:
-        cell.set_varchar(column->get_ai_generation_expr());
+        cell.set_lob_value(ObLongTextType, column->get_ai_generation_expr().ptr(),
+                           column->get_ai_generation_expr().length());
         cell.set_collation_type(collation_type);
         break;
       case NORMALIZED_EXPR:
-        cell.set_varchar(column->get_ai_normalized_expr());
+        cell.set_lob_value(ObLongTextType, column->get_ai_normalized_expr().ptr(),
+                           column->get_ai_normalized_expr().length());
         cell.set_collation_type(collation_type);
         break;
       case STATE_COLUMN_ID:

@@ -344,6 +344,9 @@ int ObDMLService::persist_ai_column_tasks(const ObDMLBaseCtDef &ctdef, ObTableMo
     LOG_WARN("AI column row identity changed without regeneration", K(ret));
   }
   if (OB_SUCC(ret) && (ctdef.new_row_.empty() || !columns.empty() || old_key != new_key)) {
+    ObDASCtx &das_ctx = op.get_exec_ctx().get_das_ctx();
+    const bool saved_task_sql = das_ctx.is_ai_column_task_sql_;
+    das_ctx.is_ai_column_task_sql_ = true;
     if (OB_FAIL(op.begin_nested_session(true))) {
     } else {
       // The external-session connection shares the business transaction.
@@ -369,6 +372,7 @@ int ObDMLService::persist_ai_column_tasks(const ObDMLBaseCtDef &ctdef, ObTableMo
       const int end_ret = op.end_nested_session();
       if (OB_SUCC(ret)) { ret = end_ret; }
     }
+    das_ctx.is_ai_column_task_sql_ = saved_task_sql;
   }
   return ret;
 }

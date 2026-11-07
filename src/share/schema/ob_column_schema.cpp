@@ -375,6 +375,9 @@ OB_DEF_DESERIALIZE(ObColumnSchemaV2)
       const bool unallocated_ai_companions = ai_state_column_id_ == OB_INVALID_ID
           && ai_request_column_id_ == OB_INVALID_ID && ai_result_spec_column_id_ == OB_INVALID_ID;
       if (OB_FAIL(ret)) {
+      } else if (pos > data_len) {
+        // ObString decoding also consumes its trailing zero byte.
+        ret = OB_INVALID_ARGUMENT;
       } else if (is_ai_column_
                  && (ai_sync_mode_ != OB_AI_COLUMN_SYNC_MODE_ASYNC
                      || ai_max_retries_ < 0 || ai_max_retries_ > OB_AI_COLUMN_MAX_RETRIES_LIMIT

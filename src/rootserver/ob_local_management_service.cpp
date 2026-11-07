@@ -1051,9 +1051,12 @@ int ObLocalManagementService::alter_table(const obcall::ObAlterTableArg &arg, ob
       if (OB_INVALID_ID == arg.alter_table_schema_.get_table_id()) {
         // skip
       } else if (OB_FAIL(ddl_service_.get_runtime_schema_guard_with_version_in_inner_table(schema_guard))) {
+        LOG_WARN("failed to refresh schema after alter table", K(ret));
       } else if (OB_FAIL(schema_guard.get_simple_table_schema(arg.alter_table_schema_.get_table_id(), simple_table_schema))) {
+        LOG_WARN("failed to read altered table schema", K(ret), K(arg.alter_table_schema_.get_table_id()));
       } else if (OB_ISNULL(simple_table_schema)) {
         ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("altered table is missing from refreshed schema", K(ret), K(arg.alter_table_schema_.get_table_id()));
       } else {
         res.schema_version_ = simple_table_schema->get_schema_version();
       }

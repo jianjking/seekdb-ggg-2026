@@ -88,7 +88,13 @@ int ObUpdateResolver::resolve(const ParseNode &parse_tree)
   int ret = OB_SUCCESS;
   ObUpdateStmt *update_stmt = NULL;
   ObSEArray<ObTableAssignment, 2> tables_assign;
-  if (parse_tree.type_ == T_UPDATE && parse_tree.value_ == 2) {
+  int64_t retry_mode = 0;
+  if (parse_tree.type_ == T_UPDATE && parse_tree.num_child_ == 11
+      && NULL != parse_tree.children_ && NULL != parse_tree.children_[10]
+      && parse_tree.children_[10]->type_ == T_INT) {
+    retry_mode = parse_tree.children_[10]->value_;
+  }
+  if (retry_mode == 2) {
     ret = OB_NOT_SUPPORTED;
     LOG_USER_ERROR(OB_NOT_SUPPORTED, "RETRY AI COLUMN mixed with another ALTER action");
     return ret;
@@ -131,7 +137,7 @@ int ObUpdateResolver::resolve(const ParseNode &parse_tree)
     }
   }
 
-  if (OB_SUCC(ret) && parse_tree.value_ == 1) {
+  if (OB_SUCC(ret) && retry_mode == 1) {
     const ObTableSchema *schema = NULL;
     const ParseNode *name = parse_tree.children_[UPDATE_LIST]->children_[0]->children_[0]->children_[2];
     if (update_stmt->get_table_items().count() != 1 || NULL == name) {
