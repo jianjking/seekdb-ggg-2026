@@ -1054,6 +1054,26 @@ int ObSchemaRetrieveUtils::fill_column_schema(const bool check_deleted, T &resul
         SHARE_SCHEMA_LOG(WARN, "extend_type_info is empty", K(ret));
       } else if (OB_FAIL(column.deserialize_extended_type_info(extend_type_info.ptr(), extend_type_info.length(), pos))) {
       } else {}
+    } else if (OB_SUCC(ret)) {
+      // AI columns persist their definition in the same column; a plain column simply
+      // carries an empty payload here.
+      ObString ai_type_info;
+      ObString empty_type_info;
+      bool skip_null_error = true;
+      bool skip_column_error = true;
+      EXTRACT_VARCHAR_FIELD_MYSQL_WITH_DEFAULT_VALUE(result,
+                                                     "extended_type_info",
+                                                     ai_type_info,
+                                                     skip_null_error,
+                                                     skip_column_error,
+                                                     empty_type_info);
+      if (OB_SUCC(ret) && !ai_type_info.empty()) {
+        int64_t pos = 0;
+        if (OB_FAIL(column.deserialize_extended_type_info(ai_type_info.ptr(),
+                                                          ai_type_info.length(),
+                                                          pos))) {
+        }
+      }
     }
 
     if (OB_SUCC(ret) && column.is_generated_column()) {

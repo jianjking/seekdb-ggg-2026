@@ -626,6 +626,30 @@ public:
   {
     return inner_flag_;
   }
+  // This capability exists only on an owned internal connection, never in SQL
+  // variables or serialized sessions. The caller must clear it before release.
+  void set_ai_column_context(uint64_t table_id, bool publish, const common::ObString &system)
+  {
+    ai_column_table_id_ = table_id;
+    ai_column_publish_ = publish;
+    ai_column_system_ = system;
+  }
+  void reset_ai_column_context()
+  {
+    ai_column_table_id_ = OB_INVALID_ID;
+    ai_column_publish_ = false;
+    ai_column_system_.reset();
+  }
+  bool is_ai_column_worker() const
+  { return !is_user_session() && ai_column_table_id_ != OB_INVALID_ID; }
+  uint64_t get_ai_column_table_id() const { return ai_column_table_id_; }
+  bool is_ai_column_publish(uint64_t table_id) const
+  { return is_ai_column_worker() && ai_column_publish_ && ai_column_table_id_ == table_id; }
+  const common::ObString &get_ai_column_system() const { return ai_column_system_; }
+  void set_ai_column_strict_context(uint64_t table, const transaction::ObTxReadSnapshot *snapshot)
+  { ai_column_strict_table_ = table; ai_column_strict_snapshot_ = snapshot; }
+  uint64_t get_ai_column_strict_table() const { return ai_column_strict_table_; }
+  const transaction::ObTxReadSnapshot *get_ai_column_strict_snapshot() const { return ai_column_strict_snapshot_; }
   void reset_audit_record(bool need_retry = false)
   {
     if (!need_retry) {
@@ -909,6 +933,11 @@ private:
   // in_transaction_ has been merged into trans_flags_.
 //  int64_t has_write_stmt_in_trans_;
   bool inner_flag_; // whether it is a virtual session for an internal request
+  uint64_t ai_column_table_id_ = OB_INVALID_ID;
+  bool ai_column_publish_ = false;
+  common::ObString ai_column_system_;
+  uint64_t ai_column_strict_table_ = OB_INVALID_ID;
+  const transaction::ObTxReadSnapshot *ai_column_strict_snapshot_ = NULL;
   // After version 2.2, this variable is no longer used
   bool is_max_availability_mode_;
   typedef common::hash::ObHashMap<ObPsStmtId, ObPsSessionInfo *,

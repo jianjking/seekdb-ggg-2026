@@ -17,6 +17,8 @@
 #define USING_LOG_PREFIX SHARE_SCHEMA
 #include "ob_column_schema.h"
 #include "share/schema/ob_schema_service.h"
+#include "share/schema/ob_table_schema.h"
+#include "common/json_type/ob_json_tree.h"
 
 namespace oceanbase
 {
@@ -77,11 +79,21 @@ int ObColumnSchemaV2::assign(const ObColumnSchemaV2 &src_schema)
     sub_type_ = src_schema.sub_type_;
     skip_index_attr_ = src_schema.skip_index_attr_;
     lob_chunk_size_ = src_schema.lob_chunk_size_;
+    is_ai_column_ = src_schema.is_ai_column_;
+    ai_sync_mode_ = src_schema.ai_sync_mode_;
+    ai_max_retries_ = src_schema.ai_max_retries_;
+    ai_func_type_ = src_schema.ai_func_type_;
+    ai_state_column_id_ = src_schema.ai_state_column_id_;
+    ai_request_column_id_ = src_schema.ai_request_column_id_;
+    ai_result_spec_column_id_ = src_schema.ai_result_spec_column_id_;
 
     if (OB_FAIL(deep_copy_obj(src_schema.orig_default_value_, orig_default_value_))) {
     } else if (OB_FAIL(deep_copy_obj(src_schema.cur_default_value_, cur_default_value_))) {
     } else if (OB_FAIL(deep_copy_str(src_schema.column_name_, column_name_))) {
     } else if (OB_FAIL(deep_copy_str(src_schema.comment_, comment_))) {
+    } else if (OB_FAIL(deep_copy_str(src_schema.ai_model_name_, ai_model_name_))) {
+    } else if (OB_FAIL(deep_copy_str(src_schema.ai_generation_expr_, ai_generation_expr_))) {
+    } else if (OB_FAIL(deep_copy_str(src_schema.ai_normalized_expr_, ai_normalized_expr_))) {
     } else if (OB_FAIL(set_extended_type_info(src_schema.extended_type_info_))) {
     } else if (src_schema.column_ref_idxs_ != NULL) {
       if (OB_FAIL(alloc_column_ref_set())) {
@@ -103,8 +115,24 @@ int ObColumnSchemaV2::assign(const ObColumnSchemaV2 &src_schema)
 
 bool ObColumnSchemaV2::operator==(const ObColumnSchemaV2 &r) const
 {
+  // AI column metadata is covered by schema_version_, so schema_version_ equality is
+  // still the primary identity check.  The extra AI predicates below only guard against
+  // a stale/partial schema image that carries the same version but lost its AI payload
+  // after a schema reload.
+  bool ai_equal = (is_ai_column_ == r.is_ai_column_);
+  if (ai_equal && is_ai_column_) {
+    ai_equal = ai_sync_mode_ == r.ai_sync_mode_
+        && ai_max_retries_ == r.ai_max_retries_
+        && ai_func_type_ == r.ai_func_type_
+        && ai_state_column_id_ == r.ai_state_column_id_
+        && ai_request_column_id_ == r.ai_request_column_id_
+        && ai_result_spec_column_id_ == r.ai_result_spec_column_id_
+        && ai_model_name_ == r.ai_model_name_
+        && ai_generation_expr_ == r.ai_generation_expr_
+        && ai_normalized_expr_ == r.ai_normalized_expr_;
+  }
   return (table_id_ == r.table_id_ && column_id_ == r.column_id_
-      && schema_version_ == r.schema_version_);
+      && schema_version_ == r.schema_version_ && ai_equal);
 }
 
 bool ObColumnSchemaV2::operator !=(const ObColumnSchemaV2 &r) const
@@ -120,6 +148,9 @@ int64_t ObColumnSchemaV2::get_convert_size() const
   convert_size += cur_default_value_.get_deep_copy_size();
   convert_size += column_name_.length() + 1;
   convert_size += comment_.length() + 1;
+  convert_size += ai_model_name_.length() + 1;
+  convert_size += ai_generation_expr_.length() + 1;
+  convert_size += ai_normalized_expr_.length() + 1;
   if (column_ref_idxs_ != NULL) {
     convert_size += sizeof(ColumnReferenceSet);
   }
@@ -188,7 +219,22 @@ void ObColumnSchemaV2::reset()
   skip_index_attr_.reset();
   lob_chunk_size_ = OB_DEFAULT_LOB_CHUNK_SIZE;
   local_session_vars_.reset();
+  reset_ai_column_metadata();
   ObSchema::reset();
+}
+
+void ObColumnSchemaV2::reset_ai_column_metadata()
+{
+  is_ai_column_ = false;
+  ai_sync_mode_ = 0;
+  ai_max_retries_ = 0;
+  ai_func_type_ = OB_AI_COLUMN_FUNC_NONE;
+  ai_state_column_id_ = OB_INVALID_ID;
+  ai_request_column_id_ = OB_INVALID_ID;
+  ai_result_spec_column_id_ = OB_INVALID_ID;
+  ai_model_name_.reset();
+  ai_generation_expr_.reset();
+  ai_normalized_expr_.reset();
 }
 
 OB_DEF_SERIALIZE(ObColumnSchemaV2)
@@ -235,7 +281,19 @@ OB_DEF_SERIALIZE(ObColumnSchemaV2)
                 sub_type_,
                 skip_index_attr_,
                 lob_chunk_size_,
-                local_session_vars_);
+                local_session_vars_,
+                is_ai_column_,
+                ai_sync_mode_,
+                ai_max_retries_,
+                ai_func_type_,
+                ai_state_column_id_,
+                ai_request_column_id_,
+                ai_result_spec_column_id_);
+    if (OB_SUCC(ret)) {
+      OB_UNIS_ENCODE(ai_model_name_);
+      OB_UNIS_ENCODE(ai_generation_expr_);
+      OB_UNIS_ENCODE(ai_normalized_expr_);
+    }
   }
 
   return ret;
@@ -248,7 +306,13 @@ OB_DEF_DESERIALIZE(ObColumnSchemaV2)
   ObObj cur_default_value;
   ObString column_name;
   ObString comment;
+  ObString ai_model_name;
+  ObString ai_generation_expr;
+  ObString ai_normalized_expr;
   bool has_column_ref = false;
+  // UNIS allows fields appended by newer writers to be absent.
+  // A reused schema object must not retain an earlier AI definition.
+  reset_ai_column_metadata();
 
   LST_DO_CODE(OB_UNIS_DECODE,
               table_id_,
@@ -295,7 +359,44 @@ OB_DEF_DESERIALIZE(ObColumnSchemaV2)
                 sub_type_,
                 skip_index_attr_,
                 lob_chunk_size_,
-                local_session_vars_);
+                local_session_vars_,
+                is_ai_column_,
+                ai_sync_mode_,
+                ai_max_retries_,
+                ai_func_type_,
+                ai_state_column_id_,
+                ai_request_column_id_,
+                ai_result_spec_column_id_);
+    if (OB_SUCC(ret)) {
+      OB_UNIS_DECODE(ai_model_name);
+      OB_UNIS_DECODE(ai_generation_expr);
+      OB_UNIS_DECODE(ai_normalized_expr);
+      // ALTER ADD reaches rootserver before its three companion IDs are allocated.
+      const bool unallocated_ai_companions = ai_state_column_id_ == OB_INVALID_ID
+          && ai_request_column_id_ == OB_INVALID_ID && ai_result_spec_column_id_ == OB_INVALID_ID;
+      if (OB_FAIL(ret)) {
+      } else if (is_ai_column_
+                 && (ai_sync_mode_ != OB_AI_COLUMN_SYNC_MODE_ASYNC
+                     || ai_max_retries_ < 0 || ai_max_retries_ > OB_AI_COLUMN_MAX_RETRIES_LIMIT
+                     || (ai_func_type_ != OB_AI_COLUMN_FUNC_COMPLETE
+                         && ai_func_type_ != OB_AI_COLUMN_FUNC_EMBED)
+                     || (!unallocated_ai_companions
+                         && (ai_state_column_id_ == OB_INVALID_ID || ai_request_column_id_ == OB_INVALID_ID
+                             || ai_result_spec_column_id_ == OB_INVALID_ID
+                             || ai_state_column_id_ == ai_request_column_id_
+                             || ai_state_column_id_ == ai_result_spec_column_id_
+                             || ai_request_column_id_ == ai_result_spec_column_id_))
+                     || ai_model_name.empty() || ai_generation_expr.empty() || ai_normalized_expr.empty())) {
+        // Optional UNIS fields may be absent only for a non-AI schema image.
+        ret = OB_INVALID_ARGUMENT;
+      } else if (OB_FAIL(set_ai_model_name(ai_model_name))) {
+      } else if (OB_FAIL(set_ai_generation_expr(ai_generation_expr))) {
+      } else if (OB_FAIL(set_ai_normalized_expr(ai_normalized_expr))) {
+      }
+    }
+  }
+  if (OB_FAIL(ret)) {
+    reset_ai_column_metadata();
   }
   return ret;
 }
@@ -340,7 +441,18 @@ OB_DEF_SERIALIZE_SIZE(ObColumnSchemaV2)
               sub_type_,
               skip_index_attr_,
               lob_chunk_size_,
-              local_session_vars_);
+              local_session_vars_,
+              is_ai_column_,
+              ai_sync_mode_,
+              ai_max_retries_,
+              ai_func_type_,
+              ai_state_column_id_,
+              ai_request_column_id_,
+              ai_result_spec_column_id_);
+  LST_DO_CODE(OB_UNIS_ADD_LEN,
+              ai_model_name_,
+              ai_generation_expr_,
+              ai_normalized_expr_);
   return len;
 }
 
@@ -508,6 +620,41 @@ int ObColumnSchemaV2::get_cascaded_column_ids(ObIArray<uint64_t> &column_ids) co
   return ret;
 }
 
+int ObColumnSchemaV2::get_ai_dependency_ids(const ObTableSchema &table, ObIArray<uint64_t> &ids) const
+{
+  int ret = OB_SUCCESS;
+  ObArenaAllocator allocator("AIColDeps");
+  ObIJsonBase *root = NULL;
+  ObIJsonBase *deps = NULL;
+  if (!is_ai_column_) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (OB_FAIL(ObJsonBaseFactory::get_json_base(&allocator, ai_normalized_expr_,
+                 ObJsonInType::JSON_TREE, ObJsonInType::JSON_TREE, root))) {
+  } else if (NULL == root || root->json_type() != ObJsonNodeType::J_OBJECT) {
+    ret = OB_INVALID_DATA;
+  } else if (OB_FAIL(root->get_object_value(ObString::make_string("deps"), deps))) {
+  } else if (NULL == deps || deps->json_type() != ObJsonNodeType::J_ARRAY) {
+    ret = OB_INVALID_DATA;
+  } else {
+    // column_ref_idxs_ belongs to generated columns and is rebuilt separately
+    // on schema load. AI dependencies are authoritative in the persisted JSON.
+    for (uint64_t i = 0; OB_SUCC(ret) && i < deps->element_count(); ++i) {
+      ObIJsonBase *name = NULL;
+      const ObColumnSchemaV2 *source = NULL;
+      if (OB_FAIL(deps->get_array_element(i, name))) {
+      } else if (NULL == name || name->json_type() != ObJsonNodeType::J_STRING) {
+        ret = OB_INVALID_DATA;
+      } else if (NULL == (source = table.get_column_schema(ObString(name->get_data_length(), name->get_data())))
+                 || source->is_hidden() || source->is_ai_column()) {
+        ret = OB_SCHEMA_ERROR;
+      } else if (!has_exist_in_array(ids, source->get_column_id())) {
+        OZ(ids.push_back(source->get_column_id()));
+      }
+    }
+  }
+  return ret;
+}
+
 int ObColumnSchemaV2::set_extended_type_info(const ObIArray<common::ObString> &info)
 {
   return deep_copy_string_array(info, extended_type_info_);
@@ -568,13 +715,39 @@ int ObColumnSchemaV2::convert_column_id(const hash::ObHashMap<uint64_t, uint64_t
       set_next_column_id(new_column_id);
     }
   }
+  if (OB_SUCC(ret) && is_ai_column_) {
+    uint64_t old_ids[3] = {ai_state_column_id_, ai_request_column_id_, ai_result_spec_column_id_};
+    uint64_t new_ids[3] = {OB_INVALID_ID, OB_INVALID_ID, OB_INVALID_ID};
+    for (int64_t i = 0; OB_SUCC(ret) && i < 3; ++i) {
+      if (OB_FAIL(column_id_map.get_refactored(old_ids[i], new_ids[i]))) {
+      }
+    }
+    if (OB_SUCC(ret)) {
+      ai_state_column_id_ = new_ids[0];
+      ai_request_column_id_ = new_ids[1];
+      ai_result_spec_column_id_ = new_ids[2];
+    }
+  }
   return ret;
+}
+
+namespace {
+// The type string array stays unchanged (VECTOR(N) must remain its only element).
+// Only the __all_column blob has this optional, versioned binary trailer.
+const int64_t AI_COLUMN_METADATA_MAGIC = 0x4149434F4C;
+const int64_t AI_COLUMN_METADATA_VERSION = 1;
 }
 
 int ObColumnSchemaV2::serialize_extended_type_info(char *buf, const int64_t buf_len, int64_t &pos) const
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(serialize_string_array(buf, buf_len, pos, extended_type_info_))) {
+  } else if (is_ai_column_) {
+    LST_DO_CODE(OB_UNIS_ENCODE,
+                AI_COLUMN_METADATA_MAGIC, AI_COLUMN_METADATA_VERSION,
+                ai_sync_mode_, ai_max_retries_, ai_func_type_,
+                ai_state_column_id_, ai_request_column_id_, ai_result_spec_column_id_,
+                ai_model_name_, ai_generation_expr_, ai_normalized_expr_);
   }
   return ret;
 }
@@ -584,7 +757,41 @@ int ObColumnSchemaV2::deserialize_extended_type_info(const char *buf,
                                                       int64_t &pos)
 {
   int ret = OB_SUCCESS;
+  reset_ai_column_metadata();
   if (OB_FAIL(deserialize_string_array(buf, data_len, pos, extended_type_info_, get_allocator()))) {
+  } else if (pos < data_len) {
+    int64_t magic = 0;
+    int64_t version = 0;
+    ObString model_name;
+    ObString generation_expr;
+    ObString normalized_expr;
+    LST_DO_CODE(OB_UNIS_DECODE, magic, version,
+                ai_sync_mode_, ai_max_retries_, ai_func_type_,
+                ai_state_column_id_, ai_request_column_id_, ai_result_spec_column_id_,
+                model_name, generation_expr, normalized_expr);
+    if (OB_FAIL(ret)) {
+    } else if (magic != AI_COLUMN_METADATA_MAGIC || version != AI_COLUMN_METADATA_VERSION
+               || pos != data_len
+               || ai_sync_mode_ != OB_AI_COLUMN_SYNC_MODE_ASYNC
+               || ai_max_retries_ < 0 || ai_max_retries_ > OB_AI_COLUMN_MAX_RETRIES_LIMIT
+               || (ai_func_type_ != OB_AI_COLUMN_FUNC_COMPLETE && ai_func_type_ != OB_AI_COLUMN_FUNC_EMBED)
+               || ai_state_column_id_ == OB_INVALID_ID || ai_request_column_id_ == OB_INVALID_ID
+               || ai_result_spec_column_id_ == OB_INVALID_ID
+               || ai_state_column_id_ == ai_request_column_id_
+               || ai_state_column_id_ == ai_result_spec_column_id_
+               || ai_request_column_id_ == ai_result_spec_column_id_
+               || model_name.empty() || generation_expr.empty() || normalized_expr.empty()) {
+      ret = OB_INVALID_ARGUMENT;
+      SHARE_SCHEMA_LOG(WARN, "invalid AI column metadata trailer", K(ret), K(magic), K(version));
+    } else if (OB_FAIL(set_ai_model_name(model_name))) {
+    } else if (OB_FAIL(set_ai_generation_expr(generation_expr))) {
+    } else if (OB_FAIL(set_ai_normalized_expr(normalized_expr))) {
+    } else {
+      is_ai_column_ = true;
+    }
+  }
+  if (OB_FAIL(ret)) {
+    reset_ai_column_metadata();
   }
   return ret;
 }

@@ -7,8 +7,9 @@
 set +x
 CURDIR="$(dirname $(readlink -f "$0"))"
 #export PATH=/usr/local/bin:$PATH
-export PATH=$CURDIR/../../../deps/3rd/usr/local/oceanbase/devtools/bin/:$PATH
-export BISON_PKGDATADIR=$CURDIR/../../../deps/3rd/usr/local/oceanbase/devtools/share/bison
+DEVTOOLS_DIR="${DEVTOOLS_DIR:-$CURDIR/../../../deps/3rd/usr/local/oceanbase/devtools}"
+export PATH="$DEVTOOLS_DIR/bin:$PATH"
+export BISON_PKGDATADIR="$DEVTOOLS_DIR/share/bison"
 CACHE_MD5_FILE=$CURDIR/_MD5
 TEMP_FILE=$(mktemp)
 

@@ -2049,6 +2049,14 @@ typedef enum ObItemType
   T_CONSTR_LOB_CHUNK_SIZE = 4558,
   T_LOB_CHUNK_SIZE = 4559,
 
+  // ---- AI COLUMN ----
+  // column attribute: <col> <type> AI COLUMN ( <ai_func_expr> ) WITH ( ... )
+  T_AI_COLUMN_ATTR = 4563,
+  // WITH ( sync_mode = 'async', max_retries = N )
+  T_AI_COLUMN_WITH = 4564,
+  // one "name = value" pair inside the AI COLUMN WITH clause
+  T_AI_COLUMN_OPTION = 4565,
+
   T_ALTER_SYSTEM_KILL = 4560, // used to support kill session
 
   T_ACTIVATE_STANDBY = 4561, // ALTER SYSTEM ACTIVATE STANDBY (failover)

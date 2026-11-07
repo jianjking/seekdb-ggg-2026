@@ -8,7 +8,10 @@ if(WIN32)
     ERROR_FILE _gen_parser.error)
 else()
   execute_process(
-    COMMAND ${CMAKE_COMMAND} -E env NEED_PARSER_CACHE=${NEED_PARSER_CACHE} bash gen_parser.sh
+    COMMAND ${CMAKE_COMMAND} -E env
+      "NEED_PARSER_CACHE=${NEED_PARSER_CACHE}"
+      "DEVTOOLS_DIR=${DEVTOOLS_DIR}"
+      bash gen_parser.sh
     RESULT_VARIABLE RET
     WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/src/pl/parser
     OUTPUT_FILE _gen_pl_parser.output

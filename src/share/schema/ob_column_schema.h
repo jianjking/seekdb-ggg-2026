@@ -31,6 +31,7 @@ namespace share
 {
 namespace schema
 {
+class ObTableSchema;
 
 const char *const STR_COLUMN_TYPE_INT = "int";
 const char *const STR_COLUMN_TYPE_UINT64 = "uint64";
@@ -48,6 +49,46 @@ const char *const STR_COLUMN_TYPE_BOOLEAN = "bool";
 const char *const STR_COLUMN_TYPE_NUMBER = "number";
 const char *const STR_COLUMN_TYPE_RAW = "raw";
 const char *const STR_COLUMN_TYPE_UNKNOWN = "unknown";
+
+// ---------------------------------------------------------------------------
+// AI COLUMN constants.
+// An AI column is declared as:  <col> <type> AI COLUMN (<ai_func_expr>) WITH (...)
+// The column itself is an ordinary user visible column; its value is produced
+// asynchronously by a background generation task.
+// ---------------------------------------------------------------------------
+enum ObAIColumnFuncType : int64_t
+{
+  OB_AI_COLUMN_FUNC_NONE = 0,
+  OB_AI_COLUMN_FUNC_COMPLETE = 1,
+  OB_AI_COLUMN_FUNC_EMBED = 2,
+};
+
+enum ObAIColumnSyncMode : int64_t
+{
+  OB_AI_COLUMN_SYNC_MODE_SYNC = 0,
+  OB_AI_COLUMN_SYNC_MODE_ASYNC = 1,
+};
+
+// Default bounded retry budget when the user does not specify max_retries.
+const int64_t OB_AI_COLUMN_DEFAULT_MAX_RETRIES = 3;
+// Upper bound accepted by max_retries= to keep a single task from looping forever.
+const int64_t OB_AI_COLUMN_MAX_RETRIES_LIMIT = 100;
+
+// Every AI column owns three hidden companion columns.  They are ordinary table
+// columns (so they are transactional and survive restart) but are flagged hidden,
+// which keeps them out of SELECT * and out of the user visible schema.
+const char *const OB_AI_COLUMN_STATE_PREFIX = "__ai_state_";
+const char *const OB_AI_COLUMN_VERSION_PREFIX = "__ai_ver_";
+const char *const OB_AI_COLUMN_SPEC_PREFIX = "__ai_spec_";
+// Generation state machine stored in the state column.
+enum ObAIColumnTaskState : int64_t
+{
+  OB_AI_COLUMN_STATE_PENDING = 0,
+  OB_AI_COLUMN_STATE_READY = 1,
+  OB_AI_COLUMN_STATE_FAILED = 2,
+  // Transient state used while a bounded retry is waiting for its backoff timer.
+  OB_AI_COLUMN_STATE_RETRY_WAIT = 3,
+};
 
 class ObTableSchema;
 class ObColumnSchemaV2 : public ObSchema
@@ -124,6 +165,29 @@ int assign(const ObColumnSchemaV2 &src_schema);
   //inline void set_new_nullable();
   inline void set_autoincrement(const bool is_autoincrement) { is_autoincrement_ = is_autoincrement; }
   inline void set_is_hidden(const bool is_hidden) { is_hidden_ = is_hidden; }
+
+  // ---- AI COLUMN metadata ----
+  inline void set_is_ai_column(const bool v) { is_ai_column_ = v; }
+  inline bool is_ai_column() const { return is_ai_column_; }
+  inline void set_ai_sync_mode(const int64_t v) { ai_sync_mode_ = v; }
+  inline int64_t get_ai_sync_mode() const { return ai_sync_mode_; }
+  inline void set_ai_max_retries(const int64_t v) { ai_max_retries_ = v; }
+  inline int64_t get_ai_max_retries() const { return ai_max_retries_; }
+  inline void set_ai_func_type(const int64_t v) { ai_func_type_ = v; }
+  inline int64_t get_ai_func_type() const { return ai_func_type_; }
+  inline void set_ai_state_column_id(const uint64_t v) { ai_state_column_id_ = v; }
+  inline uint64_t get_ai_state_column_id() const { return ai_state_column_id_; }
+  inline void set_ai_request_column_id(const uint64_t v) { ai_request_column_id_ = v; }
+  inline uint64_t get_ai_request_column_id() const { return ai_request_column_id_; }
+  inline void set_ai_result_spec_column_id(const uint64_t v) { ai_result_spec_column_id_ = v; }
+  inline uint64_t get_ai_result_spec_column_id() const { return ai_result_spec_column_id_; }
+  inline int set_ai_model_name(const common::ObString &v) { return deep_copy_str(v, ai_model_name_); }
+  inline const common::ObString &get_ai_model_name() const { return ai_model_name_; }
+  inline int set_ai_generation_expr(const common::ObString &v) { return deep_copy_str(v, ai_generation_expr_); }
+  inline const common::ObString &get_ai_generation_expr() const { return ai_generation_expr_; }
+  inline int set_ai_normalized_expr(const common::ObString &v) { return deep_copy_str(v, ai_normalized_expr_); }
+  inline const common::ObString &get_ai_normalized_expr() const { return ai_normalized_expr_; }
+  int get_ai_dependency_ids(const ObTableSchema &table, common::ObIArray<uint64_t> &ids) const;
   inline void set_charset_type(const common::ObCharsetType type) { charset_type_ = type; }
   inline void set_index_position(const int64_t index_position) { index_position_ = index_position; }
   // The following two functions is not used for juding if column's type is binary.
@@ -350,6 +414,7 @@ int assign(const ObColumnSchemaV2 &src_schema);
   DECLARE_VIRTUAL_TO_STRING;
 private:
   int alloc_column_ref_set();
+  void reset_ai_column_metadata();
 private:
   uint64_t table_id_;
   uint64_t column_id_;
@@ -380,6 +445,19 @@ private:
   common::ObObj cur_default_value_; //collation must be same with the column
   common::ObString column_name_;
   common::ObString comment_;
+  // ---- AI COLUMN metadata ----
+  // An AI column is a normal user-visible column whose value is produced by an
+  // asynchronous generation task instead of by user DML.
+  bool is_ai_column_;
+  int64_t ai_sync_mode_;   // 0: sync, 1: async (only async is supported today)
+  int64_t ai_max_retries_;
+  int64_t ai_func_type_;   // 1: AI_COMPLETE, 2: AI_EMBED
+  uint64_t ai_state_column_id_;       // hidden column holding the generation state
+  uint64_t ai_request_column_id_;     // hidden column holding the request/group identity
+  uint64_t ai_result_spec_column_id_;// hidden column holding the result spec / definition
+  common::ObString ai_model_name_;    // endpoint referenced by the AI function call
+  common::ObString ai_generation_expr_;// raw expression text as written by the user
+  common::ObString ai_normalized_expr_;// normalized generation expression (prompt included)
   common::ObArrayHelper<common::ObString> extended_type_info_;//used for enum and set
   uint64_t prev_column_id_;
   uint64_t next_column_id_;

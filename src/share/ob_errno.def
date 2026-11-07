@@ -16,6 +16,7 @@
 // OBSharding错误码值域：[-10300, -10500)
 // Reserved error code range: [-10500, -10700)
 // 富客户端错误码，值域：[-10700, -10900)
+DEFINE_ERROR_EXT(OB_AI_COLUMN_INCOMPLETE, -11120, 11120, "HY000", "AI column has unfinished tasks", "AI column has unfinished tasks for table_id=%lu, column_id=%lu");
 // SQL扩展区段1：[-11000, -12000)
 
 //////////////////////////////////// 新增(占位)须知 ////////////////////////////////////

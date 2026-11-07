@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+%expect 0
 %define api.pure
 %parse-param {ParseResult *result}
 %name-prefix "obsql_mysql_yy"
@@ -259,7 +260,7 @@ END_P SET_VAR DELIMITER
 //-----------------------------reserved keyword end-------------------------------------------------
 %token <non_reserved_keyword>
 //-----------------------------non_reserved keyword begin-------------------------------------------
-        ACCESS ACCOUNT ACTION ACTIVE ADDDATE AFTER AGAINST AGGREGATE AI ALGORITHM ALWAYS ALLOW ANALYSE ANY
+        ACCESS ACCOUNT ACTION ACTIVE ADDDATE AFTER AGAINST AGGREGATE AI RETRY ALGORITHM ALWAYS ALLOW ANALYSE ANY
         APPROX_COUNT_DISTINCT APPROX_COUNT_DISTINCT_SYNOPSIS APPROX_COUNT_DISTINCT_SYNOPSIS_MERGE
         ARRAY ASCII ASIS AT ATTRIBUTE AUTHORS AUTO AUTOEXTEND_SIZE AUTO_INCREMENT AUTO_INCREMENT_CACHE_SIZE
         AVG AVG_ROW_LENGTH ACTIVATE AVAILABILITY ASYNCHRONOUS AUDIT ADMIN AUTO_REFRESH API_MODE APPROX APPROXIMATE ARRAY_AGG ARRAY_FILTER ARRAY_FIRST ARRAY_MAP ARRAY_SORTBY
@@ -421,6 +422,7 @@ END_P SET_VAR DELIMITER
 %type <node> opt_equal_mark opt_default_mark read_only_or_write not not2
 %type <node> int_or_decimal
 %type <node> opt_column_attribute_list column_attribute column_attribute_list opt_column_default_value opt_column_default_value_list
+%type <node> opt_ai_column_with ai_column_option_list ai_column_option
 %type <node> show_stmt from_or_in columns_or_fields database_or_schema index_or_indexes_or_keys opt_from_or_in_database_clause opt_show_condition opt_desc_column_option opt_status opt_storage opt_show_engine check_table_options check_table_option
 %type <node> prepare_stmt stmt_name preparable_stmt
 %type <node> variable_set_stmt var_and_val_list var_and_val to_or_eq set_expr_or_default sys_var_and_val
@@ -6139,7 +6141,20 @@ column_attribute_list column_attribute
 }
 
 column_attribute:
-not NULLX
+AI COLUMN '(' expr ')' opt_ai_column_with
+{
+  /* <col> <type> AI COLUMN ( <ai_func_expr> ) WITH ( sync_mode=..., max_retries=... )
+   * children: [0] ai function expression, [1] WITH options (may be NULL),
+   *           [2] raw text of the ai function expression (for schema persistence) */
+  ParseNode *with_node = $6;
+  ParseNode *expr_text = NULL;
+  malloc_terminal_node(expr_text, result->malloc_pool_, T_VARCHAR);
+  check_ret(setup_token_pos_info_and_dup_string(expr_text, result,
+                                                @4.first_column, @4.last_column), &@4, result);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_AI_COLUMN_ATTR, 3, $4, with_node, expr_text);
+  $$->sql_str_off_ = @1.first_column;
+}
+| not NULLX
 {
   (void)($1) ;
   (void)($2) ; /* make bison mute */
@@ -6238,6 +6253,42 @@ not NULLX
 | INVISIBLE
 {
   malloc_terminal_node($$, result->malloc_pool_, T_INVISIBLE);
+}
+;
+
+/* ---- AI COLUMN WITH options ---- */
+opt_ai_column_with:
+/* empty */
+{
+  $$ = NULL;
+}
+| WITH '(' ai_column_option_list ')'
+{
+  $$ = $3;
+}
+;
+
+ai_column_option_list:
+ai_column_option
+{
+  $$ = $1;
+}
+| ai_column_option_list ',' ai_column_option
+{
+  $$ = $1;
+  merge_nodes($$, result, T_AI_COLUMN_WITH, $3);
+}
+;
+
+ai_column_option:
+NAME_OB COMP_EQ expr
+{
+  /* The option name is matched as a plain identifier so that "sync_mode" and
+   * "max_retries" stay usable as ordinary column names elsewhere.  The
+   * resolver validates the name and rejects anything it does not understand. */
+  ParseNode *name_node = NULL;
+  make_name_node(name_node, result->malloc_pool_, $1->str_value_);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_AI_COLUMN_OPTION, 2, name_node, $3);
 }
 ;
 
@@ -12646,6 +12697,16 @@ SHOW opt_extended_or_full TABLES opt_from_or_in_database_clause opt_show_conditi
   $$->value_ = $2[0];
   malloc_non_terminal_node($$, result->malloc_pool_, T_SHOW_COLUMNS, 4, $$, $5, $6, $7);
 }
+| SHOW AI columns_or_fields from_or_in relation_factor opt_from_or_in_database_clause opt_show_condition
+{
+  (void)$3;
+  (void)$4;
+  ParseNode *flags = NULL;
+  malloc_terminal_node(flags, result->malloc_pool_, T_INT);
+  /* Bit 2 selects AI metadata; FULL and EXTENDED retain bits 0 and 1. */
+  flags->value_ = 4;
+  malloc_non_terminal_node($$, result->malloc_pool_, T_SHOW_COLUMNS, 4, flags, $5, $6, $7);
+}
 | SHOW TABLE STATUS opt_from_or_in_database_clause opt_show_condition
 { malloc_non_terminal_node($$, result->malloc_pool_, T_SHOW_TABLE_STATUS, 2, $4, $5); }
 | SHOW PROCEDURE STATUS opt_from_or_in_database_clause opt_show_condition
@@ -14653,6 +14714,36 @@ relation_factor TO relation_factor
  *
  *****************************************************************************/
 alter_table_stmt:
+alter_with_opt_hint TABLE relation_factor RETRY AI COLUMN column_name opt_where
+{
+  ParseNode *from = NULL;
+  ParseNode *table = NULL;
+  ParseNode *target = NULL;
+  ParseNode *assignment = NULL;
+  ParseNode *assignments = NULL;
+  malloc_non_terminal_node(table, result->malloc_pool_, T_ORG, 4, $3, NULL, NULL, NULL);
+  malloc_non_terminal_node(from, result->malloc_pool_, T_TABLE_REFERENCES, 1, table);
+  malloc_non_terminal_node(target, result->malloc_pool_, T_COLUMN_REF, 3, NULL, NULL, $7);
+  dup_node_string($7, target, result->malloc_pool_);
+  malloc_non_terminal_node(assignment, result->malloc_pool_, T_ASSIGN_ITEM, 2, target, target);
+  malloc_non_terminal_node(assignments, result->malloc_pool_, T_ASSIGN_LIST, 1, assignment);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_UPDATE, 11,
+      NULL, from, assignments, $8, NULL, NULL, NULL, $1, NULL, NULL, NULL);
+  $$->value_ = 1; /* retry uses the ordinary transactional update path */
+}
+| alter_with_opt_hint TABLE relation_factor RETRY AI COLUMN column_name opt_where ',' alter_table_actions
+{
+  /* Recognize mixed actions so the resolver returns NOT_SUPPORTED (1235). */
+  (void)($1);
+  (void)($3);
+  (void)($7);
+  (void)($8);
+  (void)($10);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_UPDATE, 11,
+      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+  $$->value_ = 2;
+}
+|
 alter_with_opt_hint TABLE relation_factor alter_table_actions
 {
   ParseNode *table_actions = NULL;
@@ -17498,6 +17589,7 @@ ACCOUNT
 |       ADMIN
 |       AFTER
 |       AI
+|       RETRY
 |       AGAINST
 |       AGGREGATE
 |       ALGORITHM

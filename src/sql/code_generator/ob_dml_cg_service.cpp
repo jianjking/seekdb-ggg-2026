@@ -2094,9 +2094,35 @@ int ObDmlCgService::generate_dml_base_ctdef(ObLogicalOperator &op,
 {
   int ret = OB_SUCCESS;
   dml_base_ctdef.is_primary_index_ = index_dml_info.is_primary_index_;
+  const ObDMLStmt *ai_stmt = op.get_plan()->get_stmt();
+  if (NULL != ai_stmt && ai_stmt->is_update_stmt()) {
+    dml_base_ctdef.ai_column_retry_id_ = static_cast<const ObUpdateStmt *>(ai_stmt)->get_ai_column_retry_id();
+  }
   dml_base_ctdef.is_vec_hnsw_index_vid_opt_ = index_dml_info.is_vec_hnsw_index_vid_opt_;
+  if (index_dml_info.is_primary_index_) {
+    const ObTableSchema *table_schema = NULL;
+    ObSchemaGetterGuard *guard = op.get_plan()->get_optimizer_context().get_schema_guard();
+    if (OB_ISNULL(guard)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(guard->get_table_schema(index_dml_info.ref_table_id_, table_schema))) {
+    } else if (OB_ISNULL(table_schema)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else {
+      for (ObTableSchema::const_column_iterator it = table_schema->column_begin();
+           it != table_schema->column_end(); ++it) {
+        if (NULL != *it && (*it)->is_ai_column()) {
+          const ObSQLSessionInfo *session = op.get_plan()->get_optimizer_context().get_session_info();
+          dml_base_ctdef.has_ai_columns_ = NULL == session
+              || (!session->is_ai_column_publish(table_schema->get_table_id())
+                  && !session->get_ddl_info().is_ddl());
+          if (dml_base_ctdef.has_ai_columns_) { cg_.phy_plan_->set_has_nested_sql(true); }
+        }
+      }
+    }
+  }
   dml_base_ctdef.column_ids_.set_capacity(index_dml_info.column_exprs_.count());
-  if (OB_FAIL(generate_dml_column_ids(op, index_dml_info.column_exprs_, dml_base_ctdef.column_ids_))) {
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(generate_dml_column_ids(op, index_dml_info.column_exprs_, dml_base_ctdef.column_ids_))) {
   } else if (OB_FAIL(cg_.generate_rt_exprs(old_row, dml_base_ctdef.old_row_))) {
   } else if (OB_FAIL(cg_.generate_rt_exprs(new_row, dml_base_ctdef.new_row_))) {
   } else if (index_dml_info.is_primary_index_) {
@@ -2170,6 +2196,8 @@ int ObDmlCgService::convert_triggers(ObLogDelUpd &log_op,
                                      uint64_t dml_event)
 {
   int ret = OB_SUCCESS;
+  const ObSQLSessionInfo *session = log_op.get_plan()->get_optimizer_context().get_session_info();
+  if (NULL != session && session->is_ai_column_publish(dml_info.ref_table_id_)) { return ret; }
   if (OB_FAIL(convert_normal_triggers(log_op, dml_info, dml_ctdef, dml_event))) {
   }
   return ret;

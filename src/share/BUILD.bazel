@@ -1716,6 +1716,15 @@ _SHARE_UNIT_TEST_DEPS = [
 # Share's white-box tests intentionally exercise.  It is not a production
 # compatibility aggregate.
 cc_library(
+    name = "ai_column_task_protocol_test_interface",
+    testonly = True,
+    hdrs = ["ai_service/ai_column_task_protocol.h"],
+    features = ["layering_check"],
+    tags = ["manual"],
+    visibility = ["//unittest:__subpackages__"],
+)
+
+cc_library(
     name = "share_test_support",
     testonly = True,
     hdrs = [
@@ -1737,6 +1746,7 @@ cc_library(
 seekdb_test_interface(
     name = "share_unit_test_interface",
     deps = _SHARE_UNIT_TEST_DEPS + _SHARE_RUNTIME_OBLIB_DEPS + [
+        ":ai_column_task_protocol_test_interface",
         ":share_test_support",
         "@seekdb_3rd_headers//:roaring_headers",
     ],

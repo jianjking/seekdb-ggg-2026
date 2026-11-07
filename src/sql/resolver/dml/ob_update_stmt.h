@@ -48,6 +48,8 @@ public:
                             ObRawExprCopier &expr_copier,
                             const ObDMLStmt &other) override;
   int assign(const ObUpdateStmt &other);
+  uint64_t get_ai_column_retry_id() const { return ai_column_retry_id_; }
+  void set_ai_column_retry_id(uint64_t id) { ai_column_retry_id_ = id; }
   virtual int check_table_be_modified(uint64_t ref_table_id, bool& is_modified) const override;
   common::ObIArray<ObUpdateTableInfo*> &get_update_table_info() { return table_info_; }
   const common::ObIArray<ObUpdateTableInfo*> &get_update_table_info() const { return table_info_; }
@@ -81,6 +83,7 @@ public:
       N_QUERY_CTX, query_ctx_);
 
 private:
+  uint64_t ai_column_retry_id_;
   common::ObSEArray<ObUpdateTableInfo*, 2, common::ModulePageAllocator, true> table_info_;
 };
 } //namespace sql

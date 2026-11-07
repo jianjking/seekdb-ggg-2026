@@ -2467,6 +2467,39 @@ all_objauth_mysql_def = dict(
 def_table_schema(**all_objauth_mysql_def)
 def_table_schema(**gen_history_table_def(1134, all_objauth_mysql_def))
 
+def_table_schema(
+    owner = 'seekdb-ggg',
+    table_name = '__all_ai_column_task',
+    table_id = '1135',
+    table_type = 'SYSTEM_TABLE',
+    gm_columns = ['gmt_create', 'gmt_modified'],
+    is_cluster_private = False,
+    meta_record_in_sys = False,
+    rowkey_columns = [
+      ('table_id', 'uint'),
+      ('column_id', 'uint'),
+      ('rowkey_bin', 'varbinary:2048')
+    ],
+    normal_columns = [
+      ('request_id', 'int', 'false'),
+      ('schema_version', 'int', 'false'),
+      ('state', 'int', 'false'),
+      ('attempt_count', 'int', 'false'),
+      ('retry_count', 'int', 'false'),
+      ('max_retries', 'int', 'false'),
+      ('claim_epoch', 'int', 'false'),
+      ('owner_high', 'uint', 'false'),
+      ('owner_low', 'uint', 'false'),
+      ('lease_until_us', 'int', 'false'),
+      ('eligible_us', 'int', 'false'),
+      ('eligible_ts', 'timestamp:6', 'false'),
+      ('rowkey_predicate', 'longtext', 'false'),
+      ('generation_expr', 'longtext', 'false'),
+      ('normalized_expr', 'longtext', 'false'),
+      ('group_columns', 'longtext', 'false'),
+      ('result_payload', 'longblob', 'true')
+    ]
+)
 
 # Reserved position (placeholder before this line)
 # Placeholder suggestion for this section: Use actual table names for placeholders
@@ -6390,6 +6423,41 @@ def_table_schema(
 ################################################################################
 # End of Mysql Virtual Table (10000, 15000]
 ################################################################################
+
+################################################################################
+# AI COLUMN virtual tables (seekdb competition)
+#
+# __all_ai_column exposes the AI column metadata that is carried by the in-memory
+# schema (ObColumnSchemaV2::is_ai_column()).  It is a virtual table so that DDL,
+# ALTER and DROP are reflected immediately without an extra persistence path.
+################################################################################
+all_ai_column_def = dict(
+    owner = 'seekdb-ggg',
+    table_name = '__all_ai_column',
+    table_id = '12565',
+    table_type = 'VIRTUAL_TABLE',
+    gm_columns = [],
+
+    rowkey_columns = [
+        ('table_id', 'int'),
+        ('column_id', 'int')
+    ],
+    normal_columns = [
+        ('column_name', 'varchar:OB_MAX_COLUMN_NAME_LENGTH'),
+        ('sync_mode', 'int'),
+        ('max_retries', 'int'),
+        ('func_type', 'int'),
+        ('model_name', 'varchar:OB_MAX_COLUMN_NAME_LENGTH'),
+        ('generation_expr', 'longtext'),
+        ('normalized_expr', 'longtext'),
+        ('state_column_id', 'int'),
+        ('request_column_id', 'int'),
+        ('result_spec_column_id', 'int'),
+        ('schema_version', 'int')
+    ]
+)
+def_table_schema(**all_ai_column_def)
+
 ################################### Placeholder Notice ###################################
 # Placeholder example: Write the comment at the beginning of the line, indicating which TABLE_ID to occupy and the corresponding name
 # TABLE_ID: TABLE_NAME

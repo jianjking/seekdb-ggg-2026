@@ -60,6 +60,11 @@ protected:
                           common::ObIArray<ObTableAssignment> &table_assigns,
                           ObStmtScope scope);
 
+  int check_ai_column_write(const ObColumnRefRawExpr *column_expr);
+  int add_ai_column_assignments(ObTableAssignment &assigns,
+                                const TableItem &table_item,
+                                const share::schema::ObTableSchema &table_schema);
+
   int resolve_column_and_values(const ParseNode &assign_list,
                                 ObIArray<ObColumnRefRawExpr *> &target_list,
                                 ObIArray<ObRawExpr *> &value_list);

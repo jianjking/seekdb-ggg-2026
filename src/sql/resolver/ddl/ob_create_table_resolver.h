@@ -75,6 +75,10 @@ private:
   int64_t get_primary_key_size() const;
   int add_primary_key_part(const common::ObString &column_name, common::ObArray<ObColumnResolveStat> &stats, int64_t &pk_data_length);
   int add_hidden_tablet_seq_col();
+  // Each AI column owns three hidden companion columns (state / generation version /
+  // definition snapshot).  They must live in the table schema so that the scheduler can
+  // read and write them through the storage engine, and so that __all_column carries them.
+  int add_ai_column_hidden_columns(share::schema::ObTableSchema &table_schema);
   int check_column_name_duplicate(const ParseNode *node);
   int resolve_primary_key_node(const ParseNode &pk_node, common::ObArray<ObColumnResolveStat> &stats);
   int resolve_table_elements(const ParseNode *node,

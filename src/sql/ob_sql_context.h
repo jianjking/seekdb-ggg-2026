@@ -595,6 +595,7 @@ public:
   void reset()
   {
     question_marks_count_ = 0;
+    ai_column_references_.reset();
     calculable_items_.reset();
     fetch_cur_time_ = true;
     is_contain_virtual_table_ = false;
@@ -632,6 +633,8 @@ public:
   }
 
   int64_t get_new_stmt_id() { return stmt_count_++; }
+  // Captured before rewrite/pruning: physical table and column ID pairs.
+  common::ObSEArray<uint64_t, 8> ai_column_references_;
   int64_t get_new_subquery_id() { return ++subquery_count_; }
   int64_t get_temp_table_id() { return ++temp_table_count_; }
   int64_t get_anonymous_view_id() { return ++anonymous_view_count_; }

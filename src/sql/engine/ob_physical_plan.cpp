@@ -111,7 +111,8 @@ ObPhysicalPlan::ObPhysicalPlan(MemoryContext &mem_context /* = CURRENT_CONTEXT *
     need_switch_to_table_lock_worker_(false),
     data_complement_gen_doc_id_(false),
     insertup_can_do_gts_opt_(false),
-    px_worker_share_plan_enabled_(false)
+    px_worker_share_plan_enabled_(false),
+    ai_column_references_(allocator_)
 {
 }
 
@@ -193,6 +194,7 @@ void ObPhysicalPlan::reset()
   data_complement_gen_doc_id_ = false;
   insertup_can_do_gts_opt_ = false;
   px_worker_share_plan_enabled_ = false;
+  ai_column_references_.reset();
 }
 void ObPhysicalPlan::destroy()
 {
@@ -649,7 +651,7 @@ OB_SERIALIZE_MEMBER(ObPhysicalPlan,
                     need_switch_to_table_lock_worker_,
                     data_complement_gen_doc_id_,
                     px_parallel_rule_,
-                    px_worker_share_plan_enabled_);
+                    px_worker_share_plan_enabled_, ai_column_references_);
 
 int ObPhysicalPlan::set_table_locations(const ObTablePartitionInfoArray &infos,
                                         ObSchemaGetterGuard &schema_guard)

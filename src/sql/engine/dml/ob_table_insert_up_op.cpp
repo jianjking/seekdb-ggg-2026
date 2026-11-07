@@ -321,6 +321,8 @@ int ObTableInsertUpOp::set_heap_table_new_pk(const ObUpdCtDef &upd_ctdef,
     if (OB_FAIL(ObDMLService::set_update_hidden_pk(eval_ctx_,
                                                    upd_ctdef,
                                                    new_tablet_loc->tablet_id_))) {
+    } else if (upd_ctdef.has_ai_columns_
+               && OB_FAIL(ObDMLService::prepare_ai_column_moved_row(upd_ctdef, upd_rtdef, *this))) {
     }
   }
   return ret;

@@ -1,0 +1,109 @@
+select count(*) = 2 as alter_existing_rows_ready,
+sum(id = 2 and octet_length(result) = 16389) = 1 as outrow_result_intact
+from ai_column_integration.docs where result = concat('mock:', content);
+alter_existing_rows_ready	outrow_result_intact
+1	1
+select result is null as invalidated_inside_transaction
+from ai_column_integration.docs where id = 1;
+invalidated_inside_transaction
+1
+select result = 'mock:before-alter' as rollback_restores_result
+from ai_column_integration.docs where id = 1;
+rollback_restores_result
+1
+select count(*) = 2 as binary_composite_key_results_match
+from ai_column_integration.keyed where result = concat('mock:', content);
+binary_composite_key_results_match
+1
+select n = 3 and result is null as key_change_invalidates
+from ai_column_integration.keyed where content = 'key-new';
+key_change_invalidates
+1
+select count(*) = 2 as key_change_results_match
+from ai_column_integration.keyed where result = concat('mock:', content);
+key_change_results_match
+1
+select stamp = '2020-01-01 00:00:00' and result like 'mock:base!:%'
+as publication_preserves_inputs from ai_column_integration.implicit_inputs where id = 1;
+publication_preserves_inputs
+1
+select result is not null as no_op_preserves_result
+from ai_column_integration.implicit_inputs where id = 1;
+no_op_preserves_result
+1
+select derived = 'next!' and result is null as implicit_dependency_invalidates
+from ai_column_integration.implicit_inputs where id = 1;
+implicit_dependency_invalidates
+1
+select result = 'mock:heap-row' as heap_unrelated_update_preserves_result
+from ai_column_integration.heap_docs where bucket = 1;
+heap_unrelated_update_preserves_result
+1
+select result = 'mock:heap-row' as heap_same_partition_preserves_result
+from ai_column_integration.heap_docs where bucket = 2;
+heap_same_partition_preserves_result
+1
+select result = 'mock:heap-row' as heap_physical_move_preserves_result
+from ai_column_integration.heap_docs where bucket = 20;
+heap_physical_move_preserves_result
+1
+select bucket = 20 and result is null as heap_move_invalidates
+from ai_column_integration.heap_docs where bucket = 20;
+heap_move_invalidates
+1
+select result = 'mock:neighbor-row' as heap_other_partition_unchanged
+from ai_column_integration.heap_docs where bucket = 21;
+heap_other_partition_unchanged
+1
+select count(*) = 1 as heap_move_creates_task
+from oceanbase.__all_ai_column_task task
+join oceanbase.__all_table t on t.table_id = task.table_id
+join oceanbase.__all_database d on d.database_id = t.database_id
+where d.database_name = 'ai_column_integration' and t.table_name = 'heap_docs';
+heap_move_creates_task
+1
+select bucket = 1 and result = 'mock:heap-row' as heap_move_rollback_restores_result
+from ai_column_integration.heap_docs where bucket = 1;
+heap_move_rollback_restores_result
+1
+select bucket = 20 and result = 'mock:heap-new' as heap_move_completes
+from ai_column_integration.heap_docs where bucket = 20;
+heap_move_completes
+1
+select count(*) = 0 as heap_move_tasks_drained
+from oceanbase.__all_ai_column_task task
+join oceanbase.__all_table t on t.table_id = task.table_id
+join oceanbase.__all_database d on d.database_id = t.database_id
+where d.database_name = 'ai_column_integration' and t.table_name = 'heap_docs';
+heap_move_tasks_drained
+1
+select result = 'mock:heap-vector' as heap_vid_change_preserves_result
+from ai_column_integration.heap_vector;
+heap_vid_change_preserves_result
+1
+select result is null as pending_heap_vid_change_keeps_invalidation
+from ai_column_integration.heap_vector;
+pending_heap_vid_change_keeps_invalidation
+1
+select count(*) = 1 as pending_heap_vid_change_moves_task
+from oceanbase.__all_ai_column_task task
+join oceanbase.__all_table t on t.table_id = task.table_id
+join oceanbase.__all_database d on d.database_id = t.database_id
+where d.database_name = 'ai_column_integration' and t.table_name = 'heap_vector';
+pending_heap_vid_change_moves_task
+1
+select result = 'mock:pending-move' as pending_heap_vid_change_completes
+from ai_column_integration.heap_vector;
+pending_heap_vid_change_completes
+1
+select count(*) = 0 as pending_heap_vid_tasks_drained
+from oceanbase.__all_ai_column_task task
+join oceanbase.__all_table t on t.table_id = task.table_id
+join oceanbase.__all_database d on d.database_id = t.database_id
+where d.database_name = 'ai_column_integration' and t.table_name = 'heap_vector';
+pending_heap_vid_tasks_drained
+1
+select result = 'mock:nullable-partition' as nullable_partition_seeded
+from ai_column_integration.null_partition where bucket is null;
+nullable_partition_seeded
+1

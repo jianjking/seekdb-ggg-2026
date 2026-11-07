@@ -20,6 +20,7 @@
 #include "sql/code_generator/ob_code_generator.h"
 #include "sql/code_generator/ob_static_engine_cg.h"
 #include "sql/engine/ob_physical_plan.h"
+#include "sql/resolver/dml/ob_update_stmt.h"
 
 namespace oceanbase
 {
@@ -31,6 +32,12 @@ int ObCodeGenerator::generate(const ObLogPlan &log_plan,
 {
   int ret = OB_SUCCESS;
   int64_t batch_size = 0;
+  const ObDMLStmt *stmt = log_plan.get_stmt();
+  if (NULL != stmt && NULL != stmt->get_query_ctx()
+      && (!stmt->is_update_stmt() || static_cast<const ObUpdateStmt *>(stmt)->get_ai_column_retry_id() == OB_INVALID_ID)) {
+    OZ(phy_plan.get_ai_column_references().assign(stmt->get_query_ctx()->ai_column_references_));
+    if (!phy_plan.get_ai_column_references().empty()) { phy_plan.set_has_nested_sql(true); }
+  }
   OZ(detect_batch_size(log_plan, batch_size));
   if (OB_SUCC(ret) && batch_size > 0) {
     log_plan.get_optimizer_context().set_batch_size(batch_size);

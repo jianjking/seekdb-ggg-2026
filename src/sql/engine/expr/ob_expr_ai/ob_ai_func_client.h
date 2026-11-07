@@ -33,7 +33,8 @@ public:
   int init(common::ObIAllocator &allocator, const ObString &url, ObArray<ObString> &headers);
   void clean_up();
   void reset();
-  void set_timeout_sec(int64_t timeout_sec) { timeout_sec_ = timeout_sec; }
+  void set_timeout_sec(int64_t timeout_sec) { timeout_sec_ = timeout_sec; explicit_timeout_ = true; }
+  void set_max_retry_times(int64_t retries) { max_retry_times_ = retries; }
   // ai function interface
   virtual int send_post(common::ObIAllocator &allocator, 
                         const ObString &url,
@@ -71,6 +72,7 @@ private:
   int64_t max_retry_times_;
   int64_t abs_timeout_ts_;
   int64_t timeout_sec_;
+  bool explicit_timeout_;
   DISALLOW_COPY_AND_ASSIGN(ObAIFuncClient);
 };
 

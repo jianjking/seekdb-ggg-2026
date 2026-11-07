@@ -137,6 +137,101 @@ int ObCreateTableResolver::add_hidden_tablet_seq_col()
   return ret;
 }
 
+// Build one hidden companion column of an AI column.
+// The three companions are plain int64 columns so that the scheduler can read and
+// write them through the normal storage path, which is what makes task state
+// transactional and crash safe.
+static int build_ai_hidden_column(const char *prefix,
+                                  const common::ObString &result_name,
+                                  const uint64_t column_id,
+                                  share::schema::ObColumnSchemaV2 &hidden)
+{
+  int ret = OB_SUCCESS;
+  char name_buf[256];
+  const int64_t written = snprintf(name_buf, sizeof(name_buf), "%s%.*s",
+                                   prefix,
+                                   result_name.length(), result_name.ptr());
+  if (OB_UNLIKELY(written <= 0 || written >= static_cast<int64_t>(sizeof(name_buf)))) {
+    ret = OB_INVALID_ARGUMENT;
+    SQL_RESV_LOG(WARN, "AI hidden column name is too long", K(ret), K(result_name));
+  } else {
+    hidden.reset();
+    hidden.set_column_id(column_id);
+    hidden.set_data_type(ObIntType);
+    hidden.set_nullable(true);
+    hidden.set_is_hidden(true);
+    hidden.set_charset_type(CHARSET_BINARY);
+    hidden.set_collation_type(CS_TYPE_BINARY);
+    hidden.set_rowkey_position(0);
+    hidden.set_index_position(0);
+    if (OB_FAIL(hidden.set_column_name(common::ObString(static_cast<int32_t>(written), name_buf)))) {
+      SQL_RESV_LOG(WARN, "failed to set AI hidden column name", K(ret));
+    }
+  }
+  return ret;
+}
+
+// Each AI column owns three hidden companion columns:
+//   __ai_state_<col>  generation state (PENDING / READY / FAILED / RETRY_WAIT)
+//   __ai_ver_<col>    generation version, used to reject stale write backs
+//   __ai_spec_<col>   definition version the pending result was produced for
+// They are part of the table schema, so a rollback removes the task state together
+// with the row it belongs to, and a restart recovers it without any external queue.
+int ObCreateTableResolver::add_ai_column_hidden_columns(ObTableSchema &table_schema)
+{
+  int ret = OB_SUCCESS;
+  ObSEArray<ObString, 8> ai_column_names;
+  ObTableSchema::const_column_iterator iter = table_schema.column_begin();
+  ObTableSchema::const_column_iterator end = table_schema.column_end();
+  for (; OB_SUCC(ret) && iter != end; ++iter) {
+    const ObColumnSchemaV2 *column = *iter;
+    if (NULL != column && column->is_ai_column()) {
+      if (OB_FAIL(ai_column_names.push_back(column->get_column_name_str()))) {
+        SQL_RESV_LOG(WARN, "failed to record AI column name", K(ret));
+      }
+    }
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < ai_column_names.count(); ++i) {
+    const ObString result_name = ai_column_names.at(i);
+    ObColumnSchemaV2 *ai_column = table_schema.get_column_schema(result_name);
+    if (OB_ISNULL(ai_column)) {
+      ret = OB_ERR_UNEXPECTED;
+      SQL_RESV_LOG(WARN, "AI column missing from table schema", K(ret), K(result_name));
+    } else {
+      ObColumnSchemaV2 state_column;
+      ObColumnSchemaV2 version_column;
+      ObColumnSchemaV2 spec_column;
+      const uint64_t state_column_id = gen_column_id();
+      const uint64_t version_column_id = gen_column_id();
+      const uint64_t spec_column_id = gen_column_id();
+      if (OB_FAIL(build_ai_hidden_column(OB_AI_COLUMN_STATE_PREFIX, result_name,
+                                         state_column_id, state_column))) {
+      } else if (OB_FAIL(build_ai_hidden_column(OB_AI_COLUMN_VERSION_PREFIX, result_name,
+                                                version_column_id, version_column))) {
+      } else if (OB_FAIL(build_ai_hidden_column(OB_AI_COLUMN_SPEC_PREFIX, result_name,
+                                                spec_column_id, spec_column))) {
+      } else {
+        state_column.set_table_id(table_schema.get_table_id());
+        version_column.set_table_id(table_schema.get_table_id());
+        spec_column.set_table_id(table_schema.get_table_id());
+      }
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(table_schema.add_column(state_column))) {
+        SQL_RESV_LOG(WARN, "failed to add AI state column", K(ret), K(result_name));
+      } else if (OB_FAIL(table_schema.add_column(version_column))) {
+        SQL_RESV_LOG(WARN, "failed to add AI version column", K(ret), K(result_name));
+      } else if (OB_FAIL(table_schema.add_column(spec_column))) {
+        SQL_RESV_LOG(WARN, "failed to add AI spec column", K(ret), K(result_name));
+      } else {
+        ai_column->set_ai_state_column_id(state_column_id);
+        ai_column->set_ai_request_column_id(version_column_id);
+        ai_column->set_ai_result_spec_column_id(spec_column_id);
+      }
+    }
+  }
+  return ret;
+}
+
 // Set additional information for the temporary table
 int ObCreateTableResolver::set_temp_table_info(ObTableSchema &table_schema, ParseNode *commit_option_node)
 {
@@ -359,6 +454,7 @@ int ObCreateTableResolver::resolve(const ParseNode &parse_tree)
         if (OB_SUCC(ret)) {
           ObTableSchema &table_schema = create_table_stmt->get_create_table_arg().schema_;
           if (OB_FAIL(check_skip_index(table_schema))) {
+          } else if (OB_FAIL(check_ai_column_dependencies(table_schema))) {
           }
         }
 
@@ -893,6 +989,15 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
           if (OB_FAIL(column_name_set_.set_refactored(name_key))) {
           }
         }
+      }
+    }
+
+    // AI columns are stored as ordinary columns plus three hidden companions.
+    // The companions are created here, once every user column has an id, so that
+    // their ids never collide with a user declared column id.
+    if (OB_SUCC(ret) && RESOLVE_NON_COL != resolve_rule) {
+      if (OB_FAIL(add_ai_column_hidden_columns(table_schema))) {
+        SQL_RESV_LOG(WARN, "failed to add AI column hidden columns", K(ret));
       }
     }
 

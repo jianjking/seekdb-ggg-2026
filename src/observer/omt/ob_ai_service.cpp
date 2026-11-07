@@ -53,6 +53,7 @@ int ObAiService::init()
   int ret = OB_SUCCESS;
   if (IS_INIT) {
     ret = OB_INIT_TWICE;
+  } else if (OB_FAIL(column_worker_.init())) {
   } else {
     is_inited_ = true;
   }
@@ -61,8 +62,19 @@ int ObAiService::init()
 
 void ObAiService::destroy()
 {
+  stop();
+  wait();
+  column_worker_.destroy();
   is_inited_ = false;
 }
+
+int ObAiService::start()
+{
+  return is_inited_ ? column_worker_.start() : OB_NOT_INIT;
+}
+
+void ObAiService::stop() { column_worker_.stop(); }
+void ObAiService::wait() { column_worker_.wait(); }
 
 int ObAiService::get_ai_service_guard(ObAiServiceGuard &ai_service_guard)
 {

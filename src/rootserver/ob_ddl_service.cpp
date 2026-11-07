@@ -7774,6 +7774,62 @@ int ObDDLService::add_new_column_to_table_schema(
       
       new_table_schema.set_max_used_column_id(max_used_column_id);
     }
+    // AI COLUMN: an AI column added by ALTER owns the same three hidden companion
+    // columns as one created by CREATE TABLE.  They are created here, together with
+    // the user visible column, so both share one column id allocator and one
+    // transaction.
+    if (OB_SUCC(ret) && alter_column_schema.is_ai_column() && OB_INVALID_ID != alter_column_schema.get_column_id()) {
+      const char *prefixes[3] = {
+          share::schema::OB_AI_COLUMN_STATE_PREFIX,
+          share::schema::OB_AI_COLUMN_VERSION_PREFIX,
+          share::schema::OB_AI_COLUMN_SPEC_PREFIX};
+      uint64_t hidden_column_ids[3] = {OB_INVALID_ID, OB_INVALID_ID, OB_INVALID_ID};
+      for (int64_t i = 0; OB_SUCC(ret) && i < 3; ++i) {
+        AlterColumnSchema hidden_column;
+        char name_buf[256];
+        const common::ObString &result_name = alter_column_schema.get_column_name_str();
+        const int64_t written = snprintf(name_buf, sizeof(name_buf), "%s%.*s",
+                                         prefixes[i], result_name.length(), result_name.ptr());
+        hidden_column.reset();
+        hidden_column.alter_type_ = OB_DDL_ADD_COLUMN;
+        if (OB_UNLIKELY(written <= 0 || written >= static_cast<int64_t>(sizeof(name_buf)))) {
+          ret = OB_INVALID_ARGUMENT;
+          LOG_WARN("AI hidden column name is too long", K(ret), K(result_name));
+        } else if (OB_FAIL(hidden_column.set_column_name(
+                       common::ObString(static_cast<int32_t>(written), name_buf)))) {
+          LOG_WARN("failed to set AI hidden column name", K(ret));
+        } else {
+          hidden_column.set_data_type(ObIntType);
+          hidden_column.set_nullable(true);
+          hidden_column.set_is_hidden(true);
+          hidden_column.set_charset_type(CHARSET_BINARY);
+          hidden_column.set_collation_type(CS_TYPE_BINARY);
+          hidden_column.set_rowkey_position(0);
+          hidden_column.set_index_position(0);
+          hidden_column.set_table_id(new_table_schema.get_table_id());
+          hidden_column.set_column_id(++max_used_column_id);
+          hidden_column_ids[i] = hidden_column.get_column_id();
+          if (OB_FAIL(update_prev_id_and_add_column_(origin_table_schema,
+                                                     new_table_schema,
+                                                     hidden_column,
+                                                     ddl_operator,
+                                                     trans))) {
+            LOG_WARN("failed to add AI hidden column", K(ret), K(i));
+          } else if (update_inner_table
+                     && OB_FAIL(ddl_operator->insert_single_column(*trans,
+                                                                   new_table_schema,
+                                                                   hidden_column))) {
+            LOG_WARN("failed to persist AI hidden column", K(ret), K(i));
+          }
+        }
+      }
+      if (OB_SUCC(ret)) {
+        new_table_schema.set_max_used_column_id(max_used_column_id);
+        alter_column_schema.set_ai_state_column_id(hidden_column_ids[0]);
+        alter_column_schema.set_ai_request_column_id(hidden_column_ids[1]);
+        alter_column_schema.set_ai_result_spec_column_id(hidden_column_ids[2]);
+      }
+    }
   }
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(refill_columns_id_for_check_constraint(origin_table_schema,

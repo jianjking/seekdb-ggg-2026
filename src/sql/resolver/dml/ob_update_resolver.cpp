@@ -16,6 +16,7 @@
 
 #define USING_LOG_PREFIX SQL_RESV
 #include "sql/resolver/dml/ob_update_resolver.h"
+#include "sql/parser/parse_node.h"
 
 namespace oceanbase
 {
@@ -24,6 +25,54 @@ using namespace share;
 using namespace share::schema;
 namespace sql
 {
+namespace
+{
+int rewrite_retry_status(ParseNode *&node, ObIAllocator &alloc, const ObString &state)
+{
+  int ret = OB_SUCCESS;
+  if (NULL == node || node->type_ == T_SELECT) {
+  } else if (node->type_ == T_COLUMN_REF && node->num_child_ == 3
+      && NULL == node->children_[0] && NULL == node->children_[1]
+      && NULL != node->children_[2] && !node->children_[2]->is_input_quoted_
+      && ObCharset::case_insensitive_equal(ObString(node->children_[2]->str_len_,
+          node->children_[2]->str_value_), ObString::make_string("status"))) {
+    ParseNode *name = new_terminal_node(&alloc, T_IDENT);
+    ParseNode *ref = new_non_terminal_node(&alloc, T_COLUMN_REF, 3, NULL, NULL, name);
+    ParseNode *list = new_node(&alloc, T_WHEN_LIST, 3);
+    ParseNode *fallback = new_terminal_node(&alloc, T_VARCHAR);
+    ParseNode *value = new_non_terminal_node(&alloc, T_CASE, 3, ref, list, fallback);
+    if (NULL == name || NULL == ref || NULL == list || NULL == fallback || NULL == value) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+    } else {
+      name->str_value_ = state.ptr();
+      name->str_len_ = state.length();
+      name->is_input_quoted_ = true;
+      fallback->str_value_ = "PENDING";
+      fallback->str_len_ = 7;
+      const char *labels[] = {"PENDING", "READY", "FAILED"};
+      for (int64_t i = 0; OB_SUCC(ret) && i < 3; ++i) {
+        ParseNode *key = new_terminal_node(&alloc, T_INT);
+        ParseNode *label = new_terminal_node(&alloc, T_VARCHAR);
+        ParseNode *when = new_non_terminal_node(&alloc, T_WHEN, 2, key, label);
+        if (NULL == key || NULL == label || NULL == when) { ret = OB_ALLOCATE_MEMORY_FAILED; }
+        else {
+          key->value_ = i;
+          label->str_value_ = labels[i];
+          label->str_len_ = strlen(labels[i]);
+          list->children_[i] = when;
+        }
+      }
+      if (OB_SUCC(ret)) { node = value; }
+    }
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < node->num_child_; ++i) {
+      OZ(SMART_CALL(rewrite_retry_status(node->children_[i], alloc, state)));
+    }
+  }
+  return ret;
+}
+}
+
 ObUpdateResolver::ObUpdateResolver(ObResolverParams &param)
   : ObDelUpdResolver(param)
 {
@@ -39,6 +88,11 @@ int ObUpdateResolver::resolve(const ParseNode &parse_tree)
   int ret = OB_SUCCESS;
   ObUpdateStmt *update_stmt = NULL;
   ObSEArray<ObTableAssignment, 2> tables_assign;
+  if (parse_tree.type_ == T_UPDATE && parse_tree.value_ == 2) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "RETRY AI COLUMN mixed with another ALTER action");
+    return ret;
+  }
   if (T_UPDATE != parse_tree.type_
       || 3 > parse_tree.num_child_
       || OB_ISNULL(parse_tree.children_)
@@ -77,6 +131,29 @@ int ObUpdateResolver::resolve(const ParseNode &parse_tree)
     }
   }
 
+  if (OB_SUCC(ret) && parse_tree.value_ == 1) {
+    const ObTableSchema *schema = NULL;
+    const ParseNode *name = parse_tree.children_[UPDATE_LIST]->children_[0]->children_[0]->children_[2];
+    if (update_stmt->get_table_items().count() != 1 || NULL == name) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(schema_checker_->get_table_schema(update_stmt->get_table_items().at(0)->ref_id_, schema))) {
+    } else if (NULL == schema) {
+      ret = OB_SCHEMA_ERROR;
+    } else {
+      const ObColumnSchemaV2 *column = schema->get_column_schema(ObString(name->str_len_, name->str_value_));
+      if (NULL == column || !column->is_ai_column()) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "RETRY of a non-AI column");
+      } else {
+        update_stmt->set_ai_column_retry_id(column->get_column_id());
+        const ObColumnSchemaV2 *state = schema->get_column_schema(column->get_ai_state_column_id());
+        ParseNode *where = parse_tree.children_[WHERE];
+        if (NULL == state) { ret = OB_SCHEMA_ERROR; }
+        else { OZ(rewrite_retry_status(where, *allocator_, state->get_column_name_str())); }
+        if (OB_SUCC(ret)) { parse_tree.children_[WHERE] = where; }
+      }
+    }
+  }
   if (OB_SUCC(ret)) {
     current_scope_ = T_UPDATE_SCOPE;
     // resolve assignments
@@ -147,7 +224,8 @@ int ObUpdateResolver::resolve(const ParseNode &parse_tree)
     if (OB_FAIL(check_view_updatable())) {
     } else if (OB_FAIL(update_stmt->check_dml_need_filter_null())) {
     } else if (OB_FAIL(update_stmt->check_dml_source_from_join())) {
-    } else if (OB_FAIL(check_safe_update_mode(update_stmt))) {
+    } else if (update_stmt->get_ai_column_retry_id() == OB_INVALID_ID
+               && OB_FAIL(check_safe_update_mode(update_stmt))) {
     } else { /*do nothing*/ }
   }
   return ret;

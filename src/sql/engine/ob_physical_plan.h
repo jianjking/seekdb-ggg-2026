@@ -223,6 +223,8 @@ public:
   void set_contain_table_scan(bool v) { contain_table_scan_ = v; }
   bool contain_table_scan() const { return contain_table_scan_; }
   void set_has_nested_sql(bool has_nested_sql) { has_nested_sql_ = has_nested_sql; }
+  common::ObIArray<uint64_t> &get_ai_column_references() { return ai_column_references_; }
+  const common::ObIArray<uint64_t> &get_ai_column_references() const { return ai_column_references_; }
   bool has_nested_sql() const { return has_nested_sql_; }
   void set_session_id(uint64_t v) { session_id_ = v; }
   uint64_t get_session_id() const { return session_id_; }
@@ -528,6 +530,7 @@ private:
 private:
   bool insertup_can_do_gts_opt_;
   int64_t px_worker_share_plan_enabled_;
+  common::ObFixedArray<uint64_t, common::ObIAllocator> ai_column_references_;
 };
 
 inline void ObPhysicalPlan::set_affected_last_insert_id(bool affected_last_insert_id)

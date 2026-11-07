@@ -1,0 +1,155 @@
+# Additional P1 cases. Keep the official ai_column_ddl.test/result unchanged.
+connection default;
+--disable_query_log
+--disable_result_log
+--disable_warnings
+drop database if exists ai_column_p1_regression;
+--enable_warnings
+create database ai_column_p1_regression;
+use ai_column_p1_regression;
+
+--error 0,11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL('p1_complete');
+--error 0,11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL('p1_embed');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('p1_complete',
+  '{"type":"completion","model_name":"mock-complete"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('p1_embed',
+  '{"type":"dense_embedding","model_name":"mock-embed"}');
+
+create table docs(
+  id bigint primary key,
+  content varchar(200),
+  `c"q` varchar(100),
+  cfg json,
+  plain_vector vector(4),
+  tags json AI COLUMN (AI_COMPLETE('p1_complete', content)),
+  score bigint AI COLUMN (AI_COMPLETE('p1_complete', content)),
+  amount decimal(10,2) AI COLUMN (AI_COMPLETE('p1_complete', content)),
+  quoted varchar(200) AI COLUMN (
+    AI_COMPLETE('p1_complete', concat('literal "deps":[', `c"q`), cfg)),
+  emb vector(4) AI COLUMN (AI_EMBED('p1_embed', content, 4))
+);
+let $ok = `select count(*) = 5 from oceanbase.__all_ai_column a
+  join oceanbase.__all_table t on t.table_id=a.table_id
+  join oceanbase.__all_database d on d.database_id=t.database_id
+  where d.database_name='ai_column_p1_regression' and t.table_name='docs'`;
+if (!$ok)
+{
+  --die Missing CREATE metadata
+}
+let $ok = `select count(*) = 15 from oceanbase.__all_ai_column a
+  join oceanbase.__all_table t on t.table_id=a.table_id
+  join oceanbase.__all_database d on d.database_id=t.database_id
+  join oceanbase.__all_column c on c.table_id=a.table_id
+    and c.column_id in (a.state_column_id,a.request_column_id,a.result_spec_column_id)
+  where d.database_name='ai_column_p1_regression' and t.table_name='docs' and c.is_hidden=1`;
+if (!$ok)
+{
+  --die Missing companion columns
+}
+let $ok = `select count(*) = 1 from oceanbase.__all_ai_column a
+  join oceanbase.__all_table t on t.table_id=a.table_id
+  join oceanbase.__all_database d on d.database_id=t.database_id
+  where d.database_name='ai_column_p1_regression' and t.table_name='docs'
+  and a.column_name='amount'
+  and a.normalized_expr like '%Return exactly one finite base-10 number%'
+  and a.normalized_expr not like '%base-10 integer%'`;
+if (!$ok)
+{
+  --die Incorrect decimal prompt
+}
+let $ok = `select count(*) = 1 from oceanbase.__all_column c
+  join oceanbase.__all_table t on t.table_id=c.table_id
+  join oceanbase.__all_database d on d.database_id=t.database_id
+  where d.database_name='ai_column_p1_regression' and t.table_name='docs'
+  and c.column_name='plain_vector' and c.is_hidden=0`;
+if (!$ok)
+{
+  --die Ordinary vector column was lost
+}
+create table plain_vectors(id bigint primary key, embedding vector(4));
+create table plain_vectors_copy like plain_vectors;
+drop table plain_vectors_copy;
+drop table plain_vectors;
+--error 1054
+create table missing_dep(content varchar(20),
+  tags json AI COLUMN (AI_COMPLETE('p1_complete', missing)));
+--error 1054
+create table missing_config(content varchar(20),
+  tags json AI COLUMN (AI_COMPLETE('p1_complete', content, missing)));
+--error 1235
+create table self_dep(content varchar(20),
+  tags json AI COLUMN (AI_COMPLETE('p1_complete', TAGS)));
+--error 1235
+create table indirect_ai_dep(content varchar(20),
+  first_ai varchar(100) AI COLUMN (AI_COMPLETE('p1_complete', content)),
+  derived varchar(120) generated always as (concat(first_ai, '!')) stored,
+  second_ai varchar(200) AI COLUMN (AI_COMPLETE('p1_complete', derived)));
+--error 1235
+create table ai_partition_key(content varchar(20),
+  score bigint AI COLUMN (AI_COMPLETE('p1_complete', content)))
+  partition by hash(score) partitions 2;
+--error 1235
+create table not_null_ai(content varchar(20),
+  tags json not null AI COLUMN (AI_COMPLETE('p1_complete', content)));
+--error 1235
+create table not_null_ai_after(content varchar(20),
+  tags json AI COLUMN (AI_COMPLETE('p1_complete', content)) not null);
+--error 1210
+create table duplicate_options(content varchar(20),
+  tags json AI COLUMN (AI_COMPLETE('p1_complete', content))
+  WITH(max_retries=1,max_retries=2));
+
+create table added(id bigint primary key, content varchar(100));
+alter table added add tags json AI COLUMN (AI_COMPLETE('p1_complete', content));
+alter table added add emb vector(4) AI COLUMN (AI_EMBED('p1_embed', content));
+alter table added add unrelated int;
+--error 1054
+alter table added add broken json AI COLUMN (AI_COMPLETE('p1_complete', missing));
+--error 1235
+alter table added add chained json AI COLUMN (AI_COMPLETE('p1_complete', tags));
+--error 1235
+alter table added rename column content to renamed_content;
+--error 1235
+alter table added drop column content;
+--error 1235
+alter table added drop column tags;
+--error 1235
+alter table added modify column tags varchar(200);
+--error 1235
+alter table added modify column unrelated json AI COLUMN (AI_COMPLETE('p1_complete', content));
+let $ok = `select count(*) = 2 from oceanbase.__all_ai_column a
+  join oceanbase.__all_table t on t.table_id=a.table_id
+  join oceanbase.__all_database d on d.database_id=t.database_id
+  where d.database_name='ai_column_p1_regression' and t.table_name='added'`;
+if (!$ok)
+{
+  --die Failed ALTER changed AI metadata
+}
+let $ok = `select count(*) = 6 from oceanbase.__all_ai_column a
+  join oceanbase.__all_table t on t.table_id=a.table_id
+  join oceanbase.__all_database d on d.database_id=t.database_id
+  join oceanbase.__all_column c on c.table_id=a.table_id
+    and c.column_id in (a.state_column_id,a.request_column_id,a.result_spec_column_id)
+  where d.database_name='ai_column_p1_regression' and t.table_name='added' and c.is_hidden=1`;
+if (!$ok)
+{
+  --die Missing ALTER companion columns
+}
+set @ai_saved_sql_mode = @@sql_mode;
+set session sql_mode = '';
+create table mode_docs(id bigint primary key, content varchar(100),
+  result varchar(200) AI COLUMN (AI_COMPLETE('p1_complete', concat("constant:", content))));
+set session sql_mode = 'ANSI_QUOTES';
+alter table mode_docs add unrelated int;
+drop table mode_docs;
+set session sql_mode = @ai_saved_sql_mode;
+drop table docs;
+drop table added;
+call DBMS_AI_SERVICE.DROP_AI_MODEL('p1_complete');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('p1_embed');
+drop database ai_column_p1_regression;
+--enable_result_log
+--enable_query_log
+--echo AI COLUMN P1 DDL checks passed

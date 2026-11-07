@@ -17,6 +17,7 @@
 #define USING_LOG_PREFIX SERVER
 
 #include "ob_virtual_table_iterator_factory.h"
+#include "observer/virtual_table/ob_all_virtual_ai_column.h"
 #include "share/rc/ob_server_runtime.h"
 #include "observer/ob_server.h"
 #include "observer/ob_server_runtime_access.h"
@@ -1163,6 +1164,14 @@ int ObVTIterCreator::create_vt_iter(ObVTableScanParam &params,
             if (OB_FAIL(NEW_VIRTUAL_TABLE(ObAllVirtualLongOpsStatus, long_ops_status))) {
             } else {
               vt_iter = static_cast<ObVirtualTableIterator *>(long_ops_status);
+            }
+            break;
+          }
+          case OB_ALL_AI_COLUMN_TID: {
+            ObAllVirtualAIColumn *ai_column_iter = NULL;
+            if (OB_FAIL(NEW_VIRTUAL_TABLE(ObAllVirtualAIColumn, ai_column_iter))) {
+            } else {
+              vt_iter = static_cast<ObVirtualTableIterator *>(ai_column_iter);
             }
             break;
           }

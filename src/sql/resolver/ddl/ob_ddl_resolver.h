@@ -539,6 +539,29 @@ protected:
   int resolve_normal_column_attribute_check_cons(ObColumnSchemaV2 &column,
                                                  ParseNode *attrs_node,
                                                  ObCreateTableStmt *create_table_stmt);
+  // ---- AI COLUMN ----
+  // Resolve `AI COLUMN (<ai_func_expr>) WITH (...)` attached to a column definition.
+  int resolve_ai_column_attribute(share::schema::ObColumnSchemaV2 &column,
+                                  ParseNode *attr_node,
+                                  ObColumnResolveStat &resolve_stat);
+  // Validate the AI column result type / vector dimension and build normalized_expr.
+  // Called after the column type has been fully resolved.
+  int finalize_ai_column_definition(share::schema::ObColumnSchemaV2 &column,
+                                    const ParseNode *type_node,
+                                    const ParseNode *expr_node);
+  // Reject AI columns that depend on other AI columns.  Must run once the whole
+  // table schema is complete, since column resolution works on a per-column basis.
+  int check_ai_column_dependencies(const share::schema::ObTableSchema &table_schema,
+                                   const share::schema::ObTableSchema *base_schema = NULL);
+  static int get_ai_column_func_type(const ParseNode *expr_node, int64_t &func_type);
+  static int get_ai_column_endpoint(const ParseNode *expr_node, common::ObString &endpoint);
+  static int collect_ai_column_dependencies(const ParseNode *node,
+                                            common::ObIArray<common::ObString> &deps);
+  int extract_ai_column_dependencies(const share::schema::ObColumnSchemaV2 &column,
+                                     common::ObIArray<common::ObString> &deps);
+  int validate_ai_column_expressions(const share::schema::ObColumnSchemaV2 &column,
+                                     const share::schema::ObTableSchema &table_schema,
+                                     const share::schema::ObTableSchema *base_schema);
   int resolve_normal_column_attribute_foreign_key(ObColumnSchemaV2 &column,
                                                   ParseNode *attrs_node,
                                                   ObCreateTableStmt *create_table_stmt);

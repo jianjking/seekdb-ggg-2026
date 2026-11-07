@@ -354,12 +354,13 @@ public:
   {}
    virtual ~ObAIFuncModel() {}
    // completion
-   int call_completion(ObString &prompt, ObJsonObject *config, ObString &result);
+   int call_completion(ObString &prompt, ObJsonObject *config, ObString &result,
+                       const ObString &system = ObString(), bool durable_retry = false);
    int call_completion_vector(ObArray<ObString> &prompts, ObJsonObject *config, ObArray<ObString> &results);
    // dense_embedding
-   int call_dense_embedding(ObString &content, ObJsonObject *config, ObString &result);
+   int call_dense_embedding(ObString &content, ObJsonObject *config, ObString &result, bool durable_retry = false);
    int call_dense_embedding_vector(ObArray<ObString> &contents, ObJsonObject *config, ObArray<ObString> &results);
-   int call_dense_embedding_vector_v2(ObArray<ObString> &contents, ObJsonObject *config, ObArray<ObString> &results);
+   int call_dense_embedding_vector_v2(ObArray<ObString> &contents, ObJsonObject *config, ObArray<ObString> &results, bool durable_retry = false);
    // rerank
    int call_rerank(ObString &query, ObJsonArray *contents, ObJsonArray *&results);
  private:

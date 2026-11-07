@@ -31,6 +31,7 @@ ObAIFuncClient::ObAIFuncClient()
   abs_timeout_ts_ = 0;
   max_retry_times_ = 3;  // default retry 3 times
   timeout_sec_ = 60; // default timeout 1 minute
+  explicit_timeout_ = false;
 }
 
 #ifdef __EMSCRIPTEN__
@@ -128,6 +129,9 @@ int ObAIFuncClient::init(common::ObIAllocator &allocator, const common::ObString
 {
   int ret = OB_SUCCESS;
   int64_t remain_timeout_us = THIS_WORKER.is_timeout_ts_valid() ? THIS_WORKER.get_timeout_remain() : timeout_sec_ * 1000000;
+  if (explicit_timeout_) {
+    remain_timeout_us = std::min(remain_timeout_us, timeout_sec_ * 1000000);
+  }
   if (OB_ISNULL(url) || headers.empty()) {
     ret = OB_INVALID_ARGUMENT;
   } else {
@@ -211,7 +215,7 @@ int ObAIFuncClient::send_post(ObJsonObject *data, ObJsonObject *&response)
         response_buf.reset();
       } else if (!is_retryable_status_code(http_code)) {
         break;
-      } else {
+      } else if (i < max_retry_times_) {
         LOG_WARN("retryable http status code", K(http_code), K(i));
         int64_t delay_ms = 1000 * (1 << i) + rand() % 1000;
         ob_usleep(delay_ms * 1000);

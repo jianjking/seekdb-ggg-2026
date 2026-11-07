@@ -2016,6 +2016,9 @@ int ObSelectResolver::resolve_star(const ParseNode *node)
   } else {
     /* won't be here */
   }
+  for (int64_t i = 0; OB_SUCC(ret) && i < select_stmt->get_select_item_size(); ++i) {
+    OZ(record_ai_column_reference(select_stmt->get_select_item(i).expr_));
+  }
   return ret;
 }
 

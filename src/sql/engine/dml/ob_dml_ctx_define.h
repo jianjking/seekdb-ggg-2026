@@ -438,6 +438,8 @@ public:
   bool reserved_advanced_trigger_;
   ObExpr *trans_info_expr_;
   bool is_vec_hnsw_index_vid_opt_;
+  bool has_ai_columns_;
+  uint64_t ai_column_retry_id_;
 protected:
   ObDMLBaseCtDef(common::ObIAllocator &alloc,
                  ObDASDMLBaseCtDef &das_base_ctdef,
@@ -456,7 +458,9 @@ protected:
       is_table_without_pk_(false),
       reserved_advanced_trigger_(false),
       trans_info_expr_(nullptr),
-      is_vec_hnsw_index_vid_opt_(false)
+      is_vec_hnsw_index_vid_opt_(false),
+      has_ai_columns_(false),
+      ai_column_retry_id_(OB_INVALID_ID)
   { }
 };
 

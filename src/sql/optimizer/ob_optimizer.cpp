@@ -336,6 +336,28 @@ int ObOptimizer::check_dml_parallel_mode()
   return ret;
 }
 
+static int check_ai_column_serial_dml(const ObDelUpdStmt &stmt,
+                                     ObSchemaGetterGuard *guard, bool &enabled)
+{
+  int ret = OB_SUCCESS;
+  ObSEArray<const ObDmlTableInfo *, 2> tables;
+  if (OB_ISNULL(guard)) { ret = OB_ERR_UNEXPECTED; }
+  else if (OB_FAIL(stmt.get_dml_table_infos(tables))) { }
+  for (int64_t i = 0; OB_SUCC(ret) && enabled && i < tables.count(); ++i) {
+    const ObTableSchema *schema = NULL;
+    if (OB_ISNULL(tables.at(i))) { ret = OB_ERR_UNEXPECTED; }
+    else if (OB_FAIL(guard->get_table_schema(tables.at(i)->ref_table_id_, schema))) { }
+    else if (OB_ISNULL(schema)) { ret = OB_SCHEMA_ERROR; }
+    else {
+      for (ObTableSchema::const_column_iterator it = schema->column_begin();
+           enabled && it != schema->column_end(); ++it) {
+        if (NULL != *it && (*it)->is_ai_column()) { enabled = false; }
+      }
+    }
+  }
+  return ret;
+}
+
 int ObOptimizer::check_parallel_das_dml_supported_feature(const ObDelUpdStmt &pdml_stmt,
                                                           const ObSQLSessionInfo &session,
                                                           bool &use_parallel_das_dml)
@@ -347,6 +369,9 @@ int ObOptimizer::check_parallel_das_dml_supported_feature(const ObDelUpdStmt &pd
     use_parallel_das_dml = false;
   } else if (ctx_.is_online_ddl()) {
     use_parallel_das_dml = false;
+  }
+  if (OB_SUCC(ret) && use_parallel_das_dml) {
+    OZ(check_ai_column_serial_dml(pdml_stmt, ctx_.get_schema_guard(), use_parallel_das_dml));
   }
   return ret;
 }
@@ -499,6 +524,9 @@ int ObOptimizer::check_pdml_supported_feature(const ObDelUpdStmt &pdml_stmt,
   // Sequentially check the disabled unstable functions, if there are disabled unstable functions is open = false
   if (OB_ISNULL(schema_guard)) {
     ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(check_ai_column_serial_dml(pdml_stmt, schema_guard, is_use_pdml))) {
+  } else if (!is_use_pdml) {
+    // Task creation runs in the coordinator's business transaction.
   } else if (pdml_stmt.is_ignore()) {
     is_use_pdml = false;
     ctx_.add_plan_note(PDML_DISABLED_BY_IGNORE);
@@ -915,13 +943,13 @@ int ObOptimizer::set_auto_dop_params(const ObSQLSessionInfo &session)
   }
 
   if (OB_SUCC(ret) && 0 == parallel_degree_limit) {
-    const ObServerRuntimeState *runtime = NULL;
+    const share::ObServerRuntimeState *runtime = NULL;
     int64_t parallel_servers_target = 0;
     if (OB_ISNULL(runtime = share::server_runtime())) {
       ret = OB_ERR_UNEXPECTED;
     } else if (session.is_user_session() &&
                OB_FAIL(ObSchemaUtils::get_runtime_int_variable(*GCTX.schema_service_,
-                                                              SYS_VAR_PARALLEL_SERVERS_TARGET,
+                                                              share::SYS_VAR_PARALLEL_SERVERS_TARGET,
                                                               parallel_servers_target))) {
     } else {
       params.min_cpu_ = std::max(runtime->min_cpu(), 0.0);

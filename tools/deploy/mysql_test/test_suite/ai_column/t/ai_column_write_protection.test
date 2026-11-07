@@ -1,0 +1,91 @@
+# Resolver coverage; no model endpoint or network request is needed.
+connection default;
+--disable_query_log
+--disable_result_log
+--disable_warnings
+drop database if exists ai_column_write_protection;
+--enable_warnings
+create database ai_column_write_protection;
+use ai_column_write_protection;
+--error 0,11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL('write_protection_model');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('write_protection_model',
+  '{"type":"completion","model_name":"mock-complete"}');
+create table docs(
+  id bigint primary key auto_increment,
+  content varchar(100),
+  tags json AI COLUMN (AI_COMPLETE('write_protection_model', content))
+);
+insert into docs(id, content) values (1, 'original');
+show ai columns from docs;
+show ai fields in docs from ai_column_write_protection like 'tags';
+show ai columns from ai_column_write_protection.docs where Field = 'tags';
+show columns from docs;
+show full columns from docs;
+show extended columns from docs;
+show extended full columns from docs;
+
+--error 1235
+insert into docs(id, content, tags) values (2, 'bad', '{"manual":true}');
+--error 1235
+insert into docs(id, content, tags) values (2, 'bad', null);
+--error 1235
+insert into docs(id, content, tags) values (2, 'bad', default);
+--error 1235
+insert into docs values (2, 'bad', null);
+--error 1235
+insert into docs select 2, 'bad', null;
+--error 1235
+insert into docs(id, content, tags) select 2, 'bad', null;
+--error 1235
+insert into docs set id=2, content='bad', tags=null;
+--error 1235
+replace into docs(id, content, tags) values (1, 'bad', null);
+--error 1235
+insert into docs(id, content) values (1, 'bad')
+  on duplicate key update tags=null;
+--error 1235
+update docs set tags=null where id=1;
+--error 1235
+update docs set content='bad', tags=default where id=1;
+--error 1054,1235
+update docs set __ai_state_tags=1 where id=1;
+--error 1054,1235
+update docs set __ai_ver_tags=99 where id=1;
+--error 1054,1235
+insert into docs(id, content, __ai_spec_tags) values(2, 'bad', 1);
+--error 1235
+update docs d join docs e on d.id=e.id set d.tags=null;
+create view outputs as select id, content, tags as output from docs;
+--error 1235
+update outputs set output=null where id=1;
+--error 1235
+insert into outputs(id, content, output) values(2, 'bad', null);
+let $ok = `select count(*) = 1 and min(content) = 'original' from docs`;
+if (!$ok)
+{
+  --die Rejected writes changed business data
+}
+
+# Omitted AI results and unrelated business writes remain legal.
+insert into docs(id, content) select 2, 'allowed';
+insert into docs set id=3, content='allowed';
+insert into docs() values();
+update docs set content='changed' where id=2;
+create table ordinary(id bigint primary key, result json, emb vector(4));
+insert into ordinary values(1, '{}', [1,2,3,4]);
+update ordinary set result='{"ok":true}', emb=[4,3,2,1] where id=1;
+let $ok = `select count(*) = 1 from ordinary
+  where json_extract(result, '$.ok') = true and emb = [4,3,2,1]`;
+if (!$ok)
+{
+  --die Ordinary JSON or VECTOR writes were rejected
+}
+drop view outputs;
+drop table ordinary;
+drop table docs;
+call DBMS_AI_SERVICE.DROP_AI_MODEL('write_protection_model');
+drop database ai_column_write_protection;
+--enable_result_log
+--enable_query_log
+--echo AI COLUMN write protection and SHOW checks passed

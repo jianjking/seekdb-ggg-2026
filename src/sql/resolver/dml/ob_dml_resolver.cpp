@@ -30,6 +30,7 @@
 #include "sql/engine/expr/ob_expr_column_conv.h"
 #include "sql/engine/expr/ob_expr_version.h"
 #include "sql/resolver/dml/ob_insert_resolver.h"
+#include "sql/resolver/dml/ob_update_stmt.h"
 #include "sql/resolver/dml/ob_inlist_resolver.h"
 #include "sql/session/ob_local_session_var.h"
 #include "sql/session/ob_basic_session_info.h"
@@ -1863,6 +1864,20 @@ int ObDMLResolver::resolve_basic_column_item(const TableItem &table_item,
     const ObColumnSchemaV2 *col_schema = NULL;
     const ObTableSchema *table_schema = NULL;
     uint64_t tid = table_item.ref_id_;
+    if (session_info_->get_ai_column_strict_snapshot() != NULL
+        && session_info_->get_ai_column_strict_table() == tid) { include_hidden = true; }
+    if (stmt->is_update_stmt()) {
+      const uint64_t retry = static_cast<const ObUpdateStmt *>(stmt)->get_ai_column_retry_id();
+      if (retry != OB_INVALID_ID) {
+        const ObTableSchema *retry_table = NULL;
+        OZ(schema_checker_->get_table_schema(tid, retry_table));
+        const ObColumnSchemaV2 *target = NULL == retry_table ? NULL : retry_table->get_column_schema(retry);
+        const ObColumnSchemaV2 *state = NULL == target ? NULL : retry_table->get_column_schema(target->get_ai_state_column_id());
+        if (NULL != state && column_name == state->get_column_name_str()) { include_hidden = true; }
+      }
+    }
+    if (session_info_->is_ai_column_worker()
+        && session_info_->get_ai_column_table_id() == tid) { include_hidden = true; }
     if (!include_hidden) {
       if (!ObCharset::case_insensitive_equal(column_name, OB_HIDDEN_PK_INCREMENT_COLUMN_NAME)) {
         //do nothing
@@ -2247,6 +2262,35 @@ int ObDMLResolver::resolve_column_ref_expr(const ObQualifiedName &q_name, ObRawE
   int ret = OB_SUCCESS;
   if (OB_FAIL(resolve_table_column_expr(q_name, real_ref_expr))) {
     LOG_WARN_IGNORE_COL_NOTFOUND(ret, "resolve table column failed", K(q_name), K(ret));
+  }
+  OZ(record_ai_column_reference(real_ref_expr));
+  return ret;
+}
+
+int ObDMLResolver::record_ai_column_reference(ObRawExpr *expr)
+{
+  int ret = OB_SUCCESS;
+  if (NULL == expr || NULL == params_.query_ctx_) {
+  } else if (expr->is_column_ref_expr()) {
+    const ObColumnRefRawExpr *ref = static_cast<const ObColumnRefRawExpr *>(expr);
+    const ColumnItem *item = get_stmt()->get_column_item_by_id(ref->get_table_id(), ref->get_column_id());
+    const ObTableSchema *table = NULL;
+    if (NULL != item && item->base_tid_ != OB_INVALID_ID && item->base_cid_ != OB_INVALID_ID) {
+      OZ(schema_checker_->get_table_schema(item->base_tid_, table));
+      const ObColumnSchemaV2 *column = NULL == table ? NULL : table->get_column_schema(item->base_cid_);
+      if (OB_SUCC(ret) && NULL != column && column->is_ai_column()) {
+        ObIArray<uint64_t> &refs = params_.query_ctx_->ai_column_references_;
+        bool found = false;
+        for (int64_t i = 0; i + 1 < refs.count(); i += 2) {
+          found = found || (refs.at(i) == item->base_tid_ && refs.at(i + 1) == item->base_cid_);
+        }
+        if (!found) { OZ(refs.push_back(item->base_tid_)); OZ(refs.push_back(item->base_cid_)); }
+      }
+    }
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < expr->get_param_count(); ++i) {
+      OZ(SMART_CALL(record_ai_column_reference(expr->get_param_expr(i))));
+    }
   }
   return ret;
 }

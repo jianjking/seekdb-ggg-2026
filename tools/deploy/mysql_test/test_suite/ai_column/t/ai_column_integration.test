@@ -1,0 +1,291 @@
+# Recovery of ALTER ADD rows, outrow LOB results, and canonical composite keys.
+connection default;
+--disable_query_log
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py start 19136
+--disable_warnings
+drop database if exists ai_column_integration;
+--enable_warnings
+create database ai_column_integration;
+--error 0,11112
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('ai_column_integration_ep');
+--error 0,11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL('ai_column_integration_model');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('ai_column_integration_model',
+  '{"type":"completion","model_name":"mock-complete"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT('ai_column_integration_ep',
+  '{"ai_model_name":"ai_column_integration_model","url":"http://127.0.0.1:19136/v1/chat/completions","access_key":"integration-key","provider":"openai","request_model_name":"mock-complete"}');
+create table ai_column_integration.docs(
+  id bigint primary key, content longtext, unrelated int default 0
+);
+insert into ai_column_integration.docs(id, content)
+values(1, 'before-alter'),(2, repeat('x', 16384));
+alter table ai_column_integration.docs add column result longtext AI COLUMN (
+  AI_COMPLETE('ai_column_integration_model', content)
+) WITH (sync_mode='async', max_retries=1);
+let $retry = 150;
+let $done = 0;
+while ($retry)
+{
+  let $done = `select count(*) = 2 from ai_column_integration.docs
+                where result = concat('mock:', content)`;
+  if ($done == 1) { let $retry = 0; }
+  if ($done == 0) { --real_sleep 0.1
+    dec $retry; }
+}
+--enable_query_log
+select count(*) = 2 as alter_existing_rows_ready,
+       sum(id = 2 and octet_length(result) = 16389) = 1 as outrow_result_intact
+from ai_column_integration.docs where result = concat('mock:', content);
+--disable_query_log
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py reset 19136
+start transaction;
+update ai_column_integration.docs set content = 'rollback-value' where id = 1;
+--enable_query_log
+select result is null as invalidated_inside_transaction
+from ai_column_integration.docs where id = 1;
+--disable_query_log
+rollback;
+update ai_column_integration.docs set unrelated = 1;
+--real_sleep 2
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py assert 19136 no-requests
+--enable_query_log
+select result = 'mock:before-alter' as rollback_restores_result
+from ai_column_integration.docs where id = 1;
+--disable_query_log
+create table ai_column_integration.keyed(
+  k varbinary(16), n bigint, content varchar(64),
+  result varchar(128) AI COLUMN (AI_COMPLETE('ai_column_integration_model', content))
+    WITH (sync_mode='async', max_retries=0),
+  primary key(k,n)
+);
+insert into ai_column_integration.keyed(k,n,content)
+values(X'0000275C',1,'key-a'),(X'0000275C',2,'key-b');
+let $retry = 150;
+let $done = 0;
+while ($retry)
+{
+  let $done = `select count(*) = 2 from ai_column_integration.keyed
+                where result = concat('mock:', content)`;
+  if ($done == 1) { let $retry = 0; }
+  if ($done == 0) { --real_sleep 0.1
+    dec $retry; }
+}
+--enable_query_log
+select count(*) = 2 as binary_composite_key_results_match
+from ai_column_integration.keyed where result = concat('mock:', content);
+--disable_query_log
+start transaction;
+update ai_column_integration.keyed set n = 3, content = 'key-new'
+where k = X'0000275C' and n = 1;
+--enable_query_log
+select n = 3 and result is null as key_change_invalidates
+from ai_column_integration.keyed where content = 'key-new';
+--disable_query_log
+commit;
+let $retry = 150;
+let $done = 0;
+while ($retry)
+{
+  let $done = `select count(*) = 1 from ai_column_integration.keyed
+                where k = X'0000275C' and n = 3 and result = 'mock:key-new'`;
+  if ($done == 1) { let $retry = 0; }
+  if ($done == 0) { --real_sleep 0.1
+    dec $retry; }
+}
+--enable_query_log
+select count(*) = 2 as key_change_results_match
+from ai_column_integration.keyed where result = concat('mock:', content);
+--disable_query_log
+create table ai_column_integration.implicit_inputs(
+  id bigint primary key, content varchar(32), unrelated int default 0,
+  derived varchar(64) generated always as (concat(content, '!')) stored,
+  stamp timestamp default current_timestamp on update current_timestamp,
+  result varchar(200) AI COLUMN (AI_COMPLETE('ai_column_integration_model',
+    concat(derived, ':', cast(stamp as char)))) WITH (sync_mode='async', max_retries=0)
+);
+insert into ai_column_integration.implicit_inputs(id,content,stamp)
+values(1,'base','2020-01-01 00:00:00');
+let $retry = 150;
+let $done = 0;
+while ($retry)
+{
+  let $done = `select result is not null from ai_column_integration.implicit_inputs where id = 1`;
+  if ($done == 1) { let $retry = 0; }
+  if ($done == 0) { --real_sleep 0.1
+    dec $retry; }
+}
+--enable_query_log
+select stamp = '2020-01-01 00:00:00' and result like 'mock:base!:%'
+as publication_preserves_inputs from ai_column_integration.implicit_inputs where id = 1;
+--disable_query_log
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py reset 19136
+start transaction;
+update ai_column_integration.implicit_inputs set unrelated = unrelated where id = 1;
+--enable_query_log
+select result is not null as no_op_preserves_result
+from ai_column_integration.implicit_inputs where id = 1;
+--disable_query_log
+update ai_column_integration.implicit_inputs set content = 'next' where id = 1;
+--enable_query_log
+select derived = 'next!' and result is null as implicit_dependency_invalidates
+from ai_column_integration.implicit_inputs where id = 1;
+--disable_query_log
+rollback;
+--real_sleep 2
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py assert 19136 no-requests
+create table ai_column_integration.heap_docs(
+  bucket int, content varchar(32), unrelated int default 0,
+  result varchar(128) AI COLUMN (AI_COMPLETE('ai_column_integration_model', content))
+    WITH (sync_mode='async', max_retries=0)
+) partition by range(bucket) (
+  partition p0 values less than(10), partition p1 values less than(maxvalue)
+);
+insert into ai_column_integration.heap_docs(bucket,content) values(1,'heap-row'),(21,'neighbor-row');
+let $retry = 150;
+let $done = 0;
+while ($retry)
+{
+  let $done = `select count(*) = 2 from ai_column_integration.heap_docs where result = concat('mock:',content)`;
+  if ($done == 1) { let $retry = 0; }
+  if ($done == 0) { --real_sleep 0.1
+    dec $retry; }
+}
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py reset 19136
+start transaction;
+update ai_column_integration.heap_docs set unrelated = 1 where bucket = 1;
+--enable_query_log
+select result = 'mock:heap-row' as heap_unrelated_update_preserves_result
+from ai_column_integration.heap_docs where bucket = 1;
+--disable_query_log
+update ai_column_integration.heap_docs set bucket = 2 where bucket = 1;
+--enable_query_log
+select result = 'mock:heap-row' as heap_same_partition_preserves_result
+from ai_column_integration.heap_docs where bucket = 2;
+--disable_query_log
+update ai_column_integration.heap_docs set bucket = 20 where bucket = 2;
+--enable_query_log
+select result = 'mock:heap-row' as heap_physical_move_preserves_result
+from ai_column_integration.heap_docs where bucket = 20;
+--disable_query_log
+update ai_column_integration.heap_docs set content = 'heap-new' where bucket = 20;
+--enable_query_log
+select bucket = 20 and result is null as heap_move_invalidates
+from ai_column_integration.heap_docs where bucket = 20;
+select result = 'mock:neighbor-row' as heap_other_partition_unchanged
+from ai_column_integration.heap_docs where bucket = 21;
+select count(*) = 1 as heap_move_creates_task
+from oceanbase.__all_ai_column_task task
+join oceanbase.__all_table t on t.table_id = task.table_id
+join oceanbase.__all_database d on d.database_id = t.database_id
+where d.database_name = 'ai_column_integration' and t.table_name = 'heap_docs';
+--disable_query_log
+rollback;
+--real_sleep 2
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py assert 19136 no-requests
+--enable_query_log
+select bucket = 1 and result = 'mock:heap-row' as heap_move_rollback_restores_result
+from ai_column_integration.heap_docs where bucket = 1;
+--disable_query_log
+update ai_column_integration.heap_docs set bucket = 20, content = 'heap-new' where bucket = 1;
+let $retry = 150;
+let $done = 0;
+while ($retry)
+{
+  let $done = `select ifnull(result = 'mock:heap-new',0) from ai_column_integration.heap_docs where bucket = 20`;
+  if ($done == 1) { let $retry = 0; }
+  if ($done == 0) { --real_sleep 0.1
+    dec $retry; }
+}
+--enable_query_log
+select bucket = 20 and result = 'mock:heap-new' as heap_move_completes
+from ai_column_integration.heap_docs where bucket = 20;
+select count(*) = 0 as heap_move_tasks_drained
+from oceanbase.__all_ai_column_task task
+join oceanbase.__all_table t on t.table_id = task.table_id
+join oceanbase.__all_database d on d.database_id = t.database_id
+where d.database_name = 'ai_column_integration' and t.table_name = 'heap_docs';
+--disable_query_log
+create table ai_column_integration.heap_vector(
+  content varchar(32), plain vector(4),
+  result varchar(128) AI COLUMN (AI_COMPLETE('ai_column_integration_model', content))
+    WITH (sync_mode='async', max_retries=0)
+);
+insert into ai_column_integration.heap_vector(content,plain) values('heap-vector',[0,0,0,0]);
+let $retry = 150;
+let $done = 0;
+while ($retry)
+{
+  let $done = `select ifnull(result = 'mock:heap-vector',0) from ai_column_integration.heap_vector`;
+  if ($done == 1) { let $retry = 0; }
+  if ($done == 0) { --real_sleep 0.1
+    dec $retry; }
+}
+create vector index heap_plain_idx on ai_column_integration.heap_vector(plain)
+  with(distance=l2,type=hnsw,lib=vsag,m=10,ef_construction=12,ef_search=40);
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py reset 19136
+update ai_column_integration.heap_vector set plain = [1,0,0,0];
+--real_sleep 2
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py assert 19136 no-requests
+--enable_query_log
+select result = 'mock:heap-vector' as heap_vid_change_preserves_result
+from ai_column_integration.heap_vector;
+--disable_query_log
+start transaction;
+update ai_column_integration.heap_vector set content = 'pending-move';
+update ai_column_integration.heap_vector set plain = [2,0,0,0];
+--enable_query_log
+select result is null as pending_heap_vid_change_keeps_invalidation
+from ai_column_integration.heap_vector;
+select count(*) = 1 as pending_heap_vid_change_moves_task
+from oceanbase.__all_ai_column_task task
+join oceanbase.__all_table t on t.table_id = task.table_id
+join oceanbase.__all_database d on d.database_id = t.database_id
+where d.database_name = 'ai_column_integration' and t.table_name = 'heap_vector';
+--disable_query_log
+commit;
+let $retry = 150;
+let $done = 0;
+while ($retry)
+{
+  let $done = `select ifnull(result = 'mock:pending-move',0) from ai_column_integration.heap_vector`;
+  if ($done == 1) { let $retry = 0; }
+  if ($done == 0) { --real_sleep 0.1
+    dec $retry; }
+}
+--enable_query_log
+select result = 'mock:pending-move' as pending_heap_vid_change_completes
+from ai_column_integration.heap_vector;
+select count(*) = 0 as pending_heap_vid_tasks_drained
+from oceanbase.__all_ai_column_task task
+join oceanbase.__all_table t on t.table_id = task.table_id
+join oceanbase.__all_database d on d.database_id = t.database_id
+where d.database_name = 'ai_column_integration' and t.table_name = 'heap_vector';
+--disable_query_log
+create table ai_column_integration.null_partition(
+  bucket int, content varchar(32)
+) partition by range(bucket) (
+  partition p0 values less than(10), partition p1 values less than(maxvalue)
+);
+insert into ai_column_integration.null_partition(bucket,content) values(NULL,'nullable-partition');
+alter table ai_column_integration.null_partition add result varchar(128) AI COLUMN (
+  AI_COMPLETE('ai_column_integration_model', content)
+) WITH (sync_mode='async', max_retries=0);
+let $retry = 150;
+let $done = 0;
+while ($retry)
+{
+  let $done = `select ifnull(result = 'mock:nullable-partition',0)
+                from ai_column_integration.null_partition where bucket is null`;
+  if ($done == 1) { let $retry = 0; }
+  if ($done == 0) { --real_sleep 0.1
+    dec $retry; }
+}
+--enable_query_log
+select result = 'mock:nullable-partition' as nullable_partition_seeded
+from ai_column_integration.null_partition where bucket is null;
+--disable_query_log
+drop database ai_column_integration;
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('ai_column_integration_ep');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('ai_column_integration_model');
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py stop 19136
+--enable_query_log

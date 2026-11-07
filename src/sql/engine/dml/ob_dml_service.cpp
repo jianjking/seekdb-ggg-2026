@@ -621,6 +621,7 @@ int ObDMLService::process_insert_row(const ObInsCtDef &ins_ctdef,
         dml_op, ins_ctdef.das_base_ctdef_, ins_ctdef.trig_ctdef_, ins_rtdef.trig_rtdef_))) {
     }
     if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(prepare_ai_column_row(ins_ctdef, dml_op))) {
     } else if (OB_FAIL(check_row_null(ins_ctdef.new_row_,
                                       dml_op.get_eval_ctx(),
                                       ins_rtdef.cur_row_num_,
@@ -793,6 +794,11 @@ int ObDMLService::process_update_row(const ObUpdCtDef &upd_ctdef,
           dml_op, upd_ctdef.das_base_ctdef_, upd_ctdef.trig_ctdef_, upd_rtdef.trig_rtdef_))) {
       }
       if (OB_FAIL(ret)) {
+      } else if (upd_ctdef.has_ai_columns_
+                 && OB_FAIL(check_row_whether_changed(upd_ctdef, upd_rtdef, dml_op.get_eval_ctx()))) {
+      } else if ((!upd_ctdef.has_ai_columns_ || upd_rtdef.is_row_changed_
+                  || upd_ctdef.ai_column_retry_id_ != OB_INVALID_ID)
+                 && OB_FAIL(prepare_ai_column_row(upd_ctdef, dml_op))) {
       } else if (OB_FAIL(check_row_null(upd_ctdef.new_row_,
                                         dml_op.get_eval_ctx(),
                                         upd_rtdef.cur_row_num_,
@@ -972,6 +978,9 @@ int ObDMLService::split_upd_to_del_and_ins(const ObUpdCtDef &upd_ctdef,
         OB_FAIL(set_update_hidden_pk(dml_rtctx.get_eval_ctx(),
                                      upd_ctdef,
                                      new_tablet_loc->tablet_id_))) {
+    } else if (upd_ctdef.has_ai_columns_ && upd_ctdef.is_table_without_pk_
+               && (old_tablet_loc != new_tablet_loc || upd_ctdef.is_vec_hnsw_index_vid_opt_)
+               && OB_FAIL(prepare_ai_column_moved_row(upd_ctdef, upd_rtdef, dml_rtctx.op_))) {
     } else if (OB_FAIL(write_row_to_das_op<DAS_OP_TABLE_INSERT>(*upd_ctdef.dins_ctdef_,
                                                                 *upd_rtdef.dins_rtdef_,
                                                                 new_tablet_loc,
@@ -2165,6 +2174,8 @@ int ObDMLService::handle_after_processing_multi_row(ObDMLModifyRowsList *dml_mod
             }
           }
         }
+        if (OB_SUCC(ret) && OB_FAIL(persist_ai_column_tasks(dml_ctdef, op))) {
+        }
         // process after row trigger
         if (OB_SUCC(ret) && dml_ctdef.trig_ctdef_.all_tm_points_.has_after_row()) {
           ObEvalCtx &eval_ctx = op.get_eval_ctx();
@@ -2216,6 +2227,8 @@ int ObDMLService::handle_after_processing_single_row(ObDMLModifyRowNode &modify_
         }
       } else if (OB_FAIL(ForeignKeyHandle::do_handle(op, dml_ctdef, dml_rtdef))) {
       }
+    }
+    if (OB_SUCC(ret) && OB_FAIL(persist_ai_column_tasks(dml_ctdef, op))) {
     }
     if (OB_SUCC(ret) && OB_FAIL(TriggerHandle::do_handle_after_row(op, dml_ctdef.trig_ctdef_, dml_rtdef.trig_rtdef_, dml_event))) {
     }
