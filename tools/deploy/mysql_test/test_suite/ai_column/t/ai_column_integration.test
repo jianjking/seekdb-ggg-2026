@@ -47,7 +47,7 @@ from ai_column_integration.docs where id = 1;
 rollback;
 update ai_column_integration.docs set unrelated = 1;
 --real_sleep 2
---exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py assert 19136 no-requests
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py assert 19136 no-requests > /dev/null
 --enable_query_log
 select result = 'mock:before-alter' as rollback_restores_result
 from ai_column_integration.docs where id = 1;
@@ -132,7 +132,7 @@ from ai_column_integration.implicit_inputs where id = 1;
 --disable_query_log
 rollback;
 --real_sleep 2
---exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py assert 19136 no-requests
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py assert 19136 no-requests > /dev/null
 create table ai_column_integration.heap_docs(
   bucket int, content varchar(32), unrelated int default 0,
   result varchar(128) AI COLUMN (AI_COMPLETE('ai_column_integration_model', content))
@@ -181,7 +181,7 @@ where d.database_name = 'ai_column_integration' and t.table_name = 'heap_docs';
 --disable_query_log
 rollback;
 --real_sleep 2
---exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py assert 19136 no-requests
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py assert 19136 no-requests > /dev/null
 --enable_query_log
 select bucket = 1 and result = 'mock:heap-row' as heap_move_rollback_restores_result
 from ai_column_integration.heap_docs where bucket = 1;
@@ -225,7 +225,7 @@ create vector index heap_plain_idx on ai_column_integration.heap_vector(plain)
 --exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py reset 19136
 update ai_column_integration.heap_vector set plain = [1,0,0,0];
 --real_sleep 2
---exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py assert 19136 no-requests
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py assert 19136 no-requests > /dev/null
 --enable_query_log
 select result = 'mock:heap-vector' as heap_vid_change_preserves_result
 from ai_column_integration.heap_vector;

@@ -3235,6 +3235,7 @@ int ObSelectResolver::resolve_column_ref_expr(
   if (OB_SUCC(ret) && OB_FAIL(resolve_column_ref_in_all_namespace(q_name, real_ref_expr))) {
     LOG_WARN_IGNORE_COL_NOTFOUND(ret, "resolve column ref in all namespace failed", K(ret));
   }
+  OZ(record_ai_column_reference(real_ref_expr));
   return ret;
 }
 

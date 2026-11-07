@@ -96,7 +96,7 @@ int ObUpdateResolver::resolve(const ParseNode &parse_tree)
   }
   if (retry_mode == 2) {
     ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "RETRY AI COLUMN mixed with another ALTER action");
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "combining AI COLUMN RETRY with another ALTER action");
     return ret;
   }
   if (T_UPDATE != parse_tree.type_
@@ -149,7 +149,7 @@ int ObUpdateResolver::resolve(const ParseNode &parse_tree)
       const ObColumnSchemaV2 *column = schema->get_column_schema(ObString(name->str_len_, name->str_value_));
       if (NULL == column || !column->is_ai_column()) {
         ret = OB_NOT_SUPPORTED;
-        LOG_USER_ERROR(OB_NOT_SUPPORTED, "RETRY of a non-AI column");
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "retrying a column that is not an AI column");
       } else {
         update_stmt->set_ai_column_retry_id(column->get_column_id());
         const ObColumnSchemaV2 *state = schema->get_column_schema(column->get_ai_state_column_id());

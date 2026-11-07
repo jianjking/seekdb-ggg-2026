@@ -1,0 +1,82 @@
+# Finite retries for 429/5xx and a lost response; real SQL and local HTTP only.
+connection default;
+--disable_query_log
+--disable_result_log
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py start 19136
+create database ai_column_transport_faults;
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('transport_fault_model',
+  '{"type":"completion","model_name":"mock-complete"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT('transport_fault_ep',
+  '{"ai_model_name":"transport_fault_model","url":"http://127.0.0.1:19136/v1/chat/completions","access_key":"transport-key","provider":"openai","request_model_name":"mock-complete"}');
+create table ai_column_transport_faults.docs(
+  id bigint primary key, content varchar(64),
+  result varchar(128) AI COLUMN (AI_COMPLETE('transport_fault_model', content))
+    WITH (sync_mode='async', max_retries=2)
+);
+insert into ai_column_transport_faults.docs(id, content) values
+  (1,'http-429-once'),(2,'http-503-once'),
+  (3,'response-lost-once'),(4,'always-429'),(5,'timeout-once');
+let $retry = 300;
+let $complete = 0;
+while ($retry)
+{
+  let $complete = `select count(*) = 0 from oceanbase.__all_ai_column_task task
+    join oceanbase.__all_table t on t.table_id = task.table_id
+    join oceanbase.__all_database d on d.database_id = t.database_id
+    where d.database_name = 'ai_column_transport_faults' and t.table_name = 'docs'`;
+  if ($complete) { let $retry = 0; }
+  if (!$complete) { --real_sleep 0.1
+    dec $retry; }
+}
+if (!$complete) { --die Transport fault tasks did not reach a finite terminal state
+}
+let $ready = `select count(*) = 4 from ai_column_transport_faults.docs
+  where id in (1,2,3,5) and result = concat('mock:', content)`;
+if (!$ready) { --die Retryable transport faults did not produce the matching results
+}
+let $failed = `select result is null from ai_column_transport_faults.docs where id=4`;
+if (!$failed) { --die Exhausted 429 requests published a non-NULL result
+}
+insert into ai_column_transport_faults.docs(id,content) values(6,'slow-old-order');
+let $retry = 100;
+let $claimed = 0;
+while ($retry)
+{
+  let $claimed = `select count(*) = 1 from oceanbase.__all_ai_column_task task
+    join oceanbase.__all_table t on t.table_id = task.table_id
+    join oceanbase.__all_database d on d.database_id = t.database_id
+    where d.database_name = 'ai_column_transport_faults' and t.table_name = 'docs'
+      and task.state = 4`;
+  if ($claimed) { let $retry = 0; }
+  if (!$claimed) { --real_sleep 0.01
+    dec $retry; }
+}
+if (!$claimed) { --die Out-of-order fixture did not observe its first request claim
+}
+--real_sleep 0.1
+update ai_column_transport_faults.docs set content='fast-new-order' where id=6;
+let $retry = 100;
+let $ready = 0;
+while ($retry)
+{
+  let $ready = `select count(*) = 1 from ai_column_transport_faults.docs
+    where id=6 and result='mock:fast-new-order'`;
+  if ($ready) { let $retry = 0; }
+  if (!$ready) { --real_sleep 0.1
+    dec $retry; }
+}
+if (!$ready) { --die New request did not publish while the old HTTP response was outstanding
+}
+--real_sleep 2
+let $latest = `select result='mock:fast-new-order'
+  from ai_column_transport_faults.docs where id=6`;
+if (!$latest) { --die Late HTTP response overwrote a newer published generation
+}
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py assert 19136 transport-faults > /dev/null
+drop database ai_column_transport_faults;
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('transport_fault_ep');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('transport_fault_model');
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py stop 19136
+--enable_result_log
+--enable_query_log
+--echo HTTP timeout, 429, 503, lost response, reordering and retry exhaustion checks passed

@@ -120,7 +120,9 @@ def serve(port):
                 attempts[key] = attempts.get(key, 0) + 1
                 attempt = attempts[key]
 
-            if "slow-old" in user_text:
+            if "timeout-once" in user_text and attempt == 1:
+                time.sleep(11.2)
+            elif "slow-old" in user_text:
                 time.sleep(1.2)
             else:
                 time.sleep(0.05)
@@ -128,8 +130,13 @@ def serve(port):
             fail = "always-fail" in parsed.path or (
                 "retry-once" in user_text and attempt == 1
             )
-            if fail:
-                status = 400
+            injected_status = 0
+            if "always-429" in user_text or ("http-429-once" in user_text and attempt == 1):
+                injected_status = 429
+            elif "http-503-once" in user_text and attempt == 1:
+                injected_status = 503
+            if fail or injected_status:
+                status = injected_status or 400
                 response = {"error": {"message": "injected failure"}}
             elif parsed.path.endswith("/embeddings"):
                 values = body.get("input", [])
@@ -173,18 +180,30 @@ def serve(port):
                 "status": status,
                 "attempt": attempt,
                 "authorization": self.headers.get("Authorization", ""),
+                "model": body.get("model", ""),
                 "system": system_text,
                 "user": user_text,
             }
+            response_lost = "response-lost-once" in user_text and attempt == 1
+            if response_lost:
+                event["status"] = 0
             with lock:
                 with open(log_path, "a", encoding="utf-8") as stream:
                     stream.write(json.dumps(event, ensure_ascii=False) + "\n")
+            if response_lost:
+                self.close_connection = True
+                self.connection.shutdown(socket.SHUT_RDWR)
+                return
             payload = json.dumps(response, ensure_ascii=False).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
-            self.wfile.write(payload)
+            try:
+                self.wfile.write(payload)
+            except (BrokenPipeError, ConnectionResetError):
+                # Expected when the timeout fixture outlives its HTTP client.
+                pass
 
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 
@@ -221,6 +240,24 @@ def assert_events(port, assertion):
         )
     elif assertion == "embedding":
         ok = any(event["path"].endswith("/embeddings") for event in events)
+    elif assertion == "transport-faults":
+        expected = {
+            "http-429-once": [429, 200],
+            "http-503-once": [503, 200],
+            "response-lost-once": [0, 200],
+            "always-429": [429, 429, 429],
+        }
+        ok = all(
+            [event["status"] for event in events if event["user"] == text] == statuses
+            for text, statuses in expected.items()
+        )
+        timed = [event for event in events if event["user"] == "timeout-once"]
+        order = [event["user"] for event in events
+                 if event["user"] in ("slow-old-order", "fast-new-order")]
+        ok = (ok and sorted(event["attempt"] for event in timed) == [1, 2]
+              and order == ["fast-new-order", "slow-old-order"]
+              and all(event["authorization"] == "Bearer transport-key"
+                      and event["model"] == "mock-complete" for event in events))
     else:
         raise ValueError("unknown assertion: " + assertion)
     if not ok:

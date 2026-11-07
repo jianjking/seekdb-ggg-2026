@@ -2174,6 +2174,20 @@ int ObDMLService::handle_after_processing_multi_row(ObDMLModifyRowsList *dml_mod
             }
           }
         }
+        if (OB_SUCC(ret) && dml_ctdef.has_ai_columns_ && NULL != modify_row.new_row_) {
+          // StoredRow::to_expr skips constants, but AI companion defaults are
+          // stamped per row. Restore them before reading this row's request.
+          for (int64_t i = 0; OB_SUCC(ret) && i < dml_ctdef.new_row_.count(); ++i) {
+            ObExpr *expr = dml_ctdef.new_row_.at(i);
+            if (expr->is_const_expr()) {
+              ObDatum &datum = expr->locate_datum_for_write(op.get_eval_ctx());
+              int64_t pos = 0;
+              OZ(datum.deep_copy(modify_row.new_row_->cells()[i],
+                  const_cast<char *>(datum.ptr_), expr->res_buf_len_, pos));
+              if (OB_SUCC(ret)) { expr->set_evaluated_projected(op.get_eval_ctx()); }
+            }
+          }
+        }
         if (OB_SUCC(ret) && OB_FAIL(persist_ai_column_tasks(dml_ctdef, op))) {
         }
         // process after row trigger

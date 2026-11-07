@@ -14735,16 +14735,23 @@ alter_with_opt_hint TABLE relation_factor RETRY AI COLUMN column_name opt_where
 | alter_with_opt_hint TABLE relation_factor RETRY AI COLUMN column_name opt_where ',' alter_table_actions
 {
   /* Recognize mixed actions so the resolver returns NOT_SUPPORTED (1235). */
-  (void)($1);
-  (void)($3);
-  (void)($7);
-  (void)($8);
   (void)($10);
+  ParseNode *from = NULL;
+  ParseNode *table = NULL;
+  ParseNode *target = NULL;
+  ParseNode *assignment = NULL;
+  ParseNode *assignments = NULL;
   ParseNode *retry_marker = NULL;
   malloc_terminal_node(retry_marker, result->malloc_pool_, T_INT);
   retry_marker->value_ = 2;
+  malloc_non_terminal_node(table, result->malloc_pool_, T_ORG, 4, $3, NULL, NULL, NULL);
+  malloc_non_terminal_node(from, result->malloc_pool_, T_TABLE_REFERENCES, 1, table);
+  malloc_non_terminal_node(target, result->malloc_pool_, T_COLUMN_REF, 3, NULL, NULL, $7);
+  dup_node_string($7, target, result->malloc_pool_);
+  malloc_non_terminal_node(assignment, result->malloc_pool_, T_ASSIGN_ITEM, 2, target, target);
+  malloc_non_terminal_node(assignments, result->malloc_pool_, T_ASSIGN_LIST, 1, assignment);
   malloc_non_terminal_node($$, result->malloc_pool_, T_UPDATE, 11,
-      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, retry_marker);
+      NULL, from, assignments, $8, NULL, NULL, NULL, $1, NULL, NULL, retry_marker);
 }
 |
 alter_with_opt_hint TABLE relation_factor alter_table_actions
