@@ -2,7 +2,9 @@
 
 Baseline: `e6a58db30dc0a76ed9eae3927fb02ec6072cf4ee`.
 Repair branch: `fix/ai-column-official-20261107`.
-Status: confirmed defects repaired; final Worker runtime validation is pending.
+Production repair: `b13779470d8c7fa1c3baad7d28706a3e8630c62d`.
+Status: repaired executable linked; nine SQL suites, 29 unit tests and the
+same-data crash-recovery fixtures passed locally on November 7, 2026.
 
 ## Official Evidence Gap
 
@@ -52,31 +54,70 @@ progress. The integration test explicitly retires an AI table before testing
 ALTER ADD, preserving its original expected output and restoring session state.
 This is a repair to a reproduced defect, not an attribution of all official FAILs.
 
-## Build And Remaining Validation
+## Current Repair Validation
 
 The changed Worker Unity source and `liboceanbase_static.a` compiled successfully
-with the existing Clang 17 CMake configuration. Final LLD linking was terminated
-by the Windows memory guard (exit 143); no final runtime pass is claimed.
-The status file's stopped=0 belongs to the inner Linux guard; the outer Windows
-guard reports the actual stop. A BFD fallback failed with `PHDR segment not
-covered by LOAD segment`: CMake supplies an empty `rpm/ld.lds`, which BFD treats
-as a replacement layout. The local adapter now omits that empty script for BFD,
-but its corrected retry was refused by memory preflight before launch.
-No valid new server binary was produced. The prior 29 unit passes are historical,
-not a fresh validation of the Worker repair.
+with the existing Clang 17 CMake configuration (`-O0 -g0`, single concurrency).
+The original LLD attempt was stopped by the Windows memory guard (exit 143).
+A bounded BFD fallback failed on the generated empty linker script and its
+adapted retry was refused before launch. Neither attempt produced a candidate.
+After host memory recovered to about 3.1 GiB free and 64% Commit, the existing
+CMake link command succeeded with the matching SDK LLD and one linker thread.
+The validation link additionally strips SDK DWARF, preserving runtime sections
+and the normal symbol table. Link exit: 0; linker maximum RSS: 2,003,992 KiB.
+The successful link and runtime runs did not trigger the Windows memory guard.
 
-Local commands, original exits, rejects, source and package hashes, and private
-runner scripts are under `.p1-validation/official-20261107/`. In particular:
+New executable:
+`/home/xiaob/ai-column-validation-f9f9266-20261107/build/src/observer/seekdb.official-lld-validation`.
+SHA256: `03e78d4b6e69bc7298b5543b9a3b0f14db359ba3b78c0769be790c6fa0518989`.
+The native Worker source is byte-identical to the repair checkout; SHA256:
+`9f1c468714ceef830caed86ea3ab0668e7f4f2fe3b1e5fdadbc6670539ac35cf`.
+
+| Current run | Actual result | Checks |
+| --- | --- | --- |
+| Five main SQL suites, new executable | 5/5, each exit 0 | DDL, DML/rollback, Worker/retry/stale results/group publication, vector index, RETRY/Strict Read |
+| Additional SQL suites, new executable | 4/4, each exit 0 | DDL regression, result write protection, integration including retired-table ALTER ADD, transport faults |
+| Schema and task protocol unit tests | 29/29, exit 0 | Schema 13; task protocol 16; fresh execution at 19:50:52, unchanged unit/Schema sources since baseline |
+| Same-data crash-recovery fixtures, new executable | Seed 0; crash -9; verify 0 | Durable RUNNING claim, real lease expiry, atomic publication, Schema/ordinary VECTOR reload, task cleanup, Strict Read, ANN and post-restart regeneration |
+
+The nine SQL suites used raw repository `init.sql` and `init_user.sql`,
+admin/admin, the repository `discover_cases()` and `run_case()`, obclient 2.2.3,
+and no prologue. Each passed on its first attempt; no whitespace override was
+used. Existing `.result` files are unchanged. Recovery used a fresh private
+database, the same initialization and client, and only killed its own child
+server. Neither lease duration nor Mock computations were bypassed.
+
+Reproduction commands, from this checkout in PowerShell:
+
+```powershell
+& ./.p1-validation/official-20261107/run_guarded.ps1 -Mode link
+& ./.p1-validation/official-20261107/run_guarded.ps1 -Mode obclient-fixed
+& ./.p1-validation/20261107/compile_cmake_unit.ps1 -Mode native-schema
+& ./.p1-validation/official-20261107/run_guarded.ps1 -Mode obclient-recovery
+```
+
+The link adapter refuses to overwrite an existing candidate; inspect and reuse
+the recorded binary rather than repeating that step. Commands, exits, original
+rejects and hashes are under `.p1-validation/official-20261107/`, including
+`link.log`, `link-command.json`, `obclient-fixed.log`, `obclient-fixed.status`,
+`obclient-recovery.log`, `obclient-recovery.status`, `native-schema.xml`,
+`native-schema.log` and `RESULTS.txt`. Original failure evidence remains in
 `baseline.log`, `baseline-ai_column_*.reject`, `fixed.log`,
-`admin-integration.reject`, `obclient-baseline.log`, `server-link-host-guard.log`,
-`link-bfd-empty-script.log`, and `link-command.json`. Runtime directories:
+`admin-integration.reject` and `obclient-baseline.log`. Current runtime paths:
 
-- `/home/xiaob/ai-column-validation-f9f9266-20261107/official-parity-20261107-192711-baseline`
-- `/home/xiaob/ai-column-validation-f9f9266-20261107/official-parity-20261107-192846-fixed`
-- `/home/xiaob/ai-column-validation-f9f9266-20261107/official-parity-20261107-193255-obclient-baseline`
+- `/home/xiaob/ai-column-validation-f9f9266-20261107/official-parity-20261107-194819-obclient-fixed`
+- `/home/xiaob/ai-column-validation-f9f9266-20261107/official-parity-20261107-195009-obclient-recovery`
 
-Next: obtain one official failing SQL/reject with build/startup/client details;
-with adequate host headroom, link the compiled repair and run the nine suites
-using obclient, raw repository initialization, no prologue, and then recovery.
+## Remaining Official Evidence
+
+The repair is a locally validated candidate. The official all-five failure is
+still unexplained: the original baseline also passes all five repository suites
+with the repository-declared client. The essential next evidence is one official
+first failure (SQL/error/reject), plus the tested revision, build/startup commands
+and client version. Local passes cannot establish an official score or prove
+parity with undisclosed tests or configuration.
+
 No push, official resubmission, paid model, system configuration change, or
-unrelated process termination was performed. This is not a validated submission.
+unrelated process termination was performed. Private server/Mock processes were
+stopped after verification; original workspaces and the frozen FTS version remain
+untouched.
