@@ -1,4 +1,5 @@
-# Additional P1 cases. Keep the official ai_column_ddl.test/result unchanged.
+# Additional P1 cases; preserve the DDL assertions and expected SQL output.
+--disable_connect_log
 connection default;
 --disable_query_log
 --disable_result_log

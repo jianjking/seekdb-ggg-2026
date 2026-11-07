@@ -1,4 +1,5 @@
 # Resolver coverage; no model endpoint or network request is needed.
+--disable_connect_log
 connection default;
 --disable_query_log
 --disable_result_log

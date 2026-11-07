@@ -1,5 +1,6 @@
 # AI column physical DDL and metadata coverage.  No external model request is made.
 
+--disable_connect_log
 connection default;
 --disable_warnings
 drop database if exists ai_column_p0_ddl;

@@ -1,4 +1,5 @@
 # Recovery of ALTER ADD rows, outrow LOB results, and canonical composite keys.
+--disable_connect_log
 connection default;
 --disable_query_log
 --exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py start 19136
@@ -14,6 +15,16 @@ call DBMS_AI_SERVICE.CREATE_AI_MODEL('ai_column_integration_model',
   '{"type":"completion","model_name":"mock-complete"}');
 call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT('ai_column_integration_ep',
   '{"ai_model_name":"ai_column_integration_model","url":"http://127.0.0.1:19136/v1/chat/completions","access_key":"integration-key","provider":"openai","request_model_name":"mock-complete"}');
+# A retired AI schema must not block ALTER ADD seeding of a later live table.
+let $recyclebin_before = `select @@session.recyclebin`;
+set session recyclebin = on;
+create table ai_column_integration.retired(
+  id bigint primary key, content varchar(32),
+  result varchar(128) AI COLUMN (AI_COMPLETE('ai_column_integration_model', content))
+    WITH (sync_mode='async', max_retries=0)
+);
+drop table ai_column_integration.retired;
+eval set session recyclebin = $recyclebin_before;
 create table ai_column_integration.docs(
   id bigint primary key, content longtext, unrelated int default 0
 );

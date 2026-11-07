@@ -1,4 +1,5 @@
 # Finite retries for 429/5xx and a lost response; real SQL and local HTTP only.
+--disable_connect_log
 connection default;
 --disable_query_log
 --disable_result_log

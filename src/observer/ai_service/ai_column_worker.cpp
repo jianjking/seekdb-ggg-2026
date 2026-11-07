@@ -705,7 +705,8 @@ int seed_uninitialized_rows(std::vector<TableSeedProgress> &progress)
   std::vector<TableSeedProgress> next_progress;
   for (int64_t i = 0; OB_SUCC(ret) && i < tables.count(); ++i) {
     const ObTableSchema *table = tables.at(i);
-    if (NULL == table || !table->is_user_table() || table->is_user_hidden_table()) { continue; }
+    if (NULL == table || !table->is_user_table() || table->is_user_hidden_table()
+        || table->is_in_recyclebin()) { continue; }
     bool complete = false;
     for (const TableSeedProgress &p : progress) {
       complete = complete || (p.table_id_ == table->get_table_id()
@@ -717,14 +718,24 @@ int seed_uninitialized_rows(std::vector<TableSeedProgress> &progress)
            OB_SUCC(ret) && it != table->column_end(); ++it) {
         if (NULL != *it && (*it)->is_ai_column()) {
           bool column_complete = false;
-          OZ(seed_column_rows(guard, *table, **it, column_complete));
+          const int seed_ret = seed_column_rows(guard, *table, **it, column_complete);
+          if (OB_SUCCESS != seed_ret) {
+            // DDL can retire a table after this schema snapshot. Keep its
+            // progress incomplete without starving initialization of other tables.
+            complete = false;
+            if (REACH_TIME_INTERVAL(10000000)) {
+              LOG_WARN("AI column table initialization deferred", K(seed_ret),
+                       K(table->get_table_id()), K((*it)->get_column_id()));
+            }
+            break;
+          }
           complete = complete && column_complete;
         }
       }
     }
     next_progress.push_back({table->get_table_id(), table->get_schema_version(), complete});
   }
-  // A failed transaction must never mark an unfinished schema as scanned.
+  // Only fully initialized tables are cached as complete; failed tables retry.
   if (OB_SUCC(ret)) { progress.swap(next_progress); }
   return ret;
 }

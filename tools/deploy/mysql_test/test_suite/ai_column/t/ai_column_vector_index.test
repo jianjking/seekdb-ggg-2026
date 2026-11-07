@@ -1,5 +1,6 @@
 # AI VECTOR invalidation, VSAG maintenance, ANN scan, and rollback coverage.
 
+--disable_connect_log
 connection default;
 --exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py start 19123
 --disable_warnings

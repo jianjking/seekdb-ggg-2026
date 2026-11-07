@@ -1,5 +1,6 @@
 # AI worker request, typed prompt, grouped visibility, retry, and stale-result coverage.
 
+--disable_connect_log
 connection default;
 --exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py start 19122
 --disable_warnings
